@@ -4,6 +4,7 @@ import "github.com/charmbracelet/lipgloss"
 
 // Catppuccin Mocha palette
 var (
+	catPink      = lipgloss.Color("#f5c2e7")
 	catMauve     = lipgloss.Color("#cba6f7")
 	catPeach     = lipgloss.Color("#fab387")
 	catSapphire  = lipgloss.Color("#74c7ec")

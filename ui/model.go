@@ -78,16 +78,19 @@ type errMsg struct{ err error }
 
 type keyMap struct {
 	Up, Down, Enter, Back key.Binding
+	Space, SelectAll      key.Binding
 	Top, Bottom           key.Binding
 	Quit                  key.Binding
 }
 
 var keys = keyMap{
-	Up:     key.NewBinding(key.WithKeys("up", "k")),
-	Down:   key.NewBinding(key.WithKeys("down", "j")),
-	Enter:  key.NewBinding(key.WithKeys("enter", "l", "right")),
-	Back:   key.NewBinding(key.WithKeys("backspace", "h", "left")),
-	Top:    key.NewBinding(key.WithKeys("g")),
-	Bottom: key.NewBinding(key.WithKeys("G")),
-	Quit:   key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	Up:        key.NewBinding(key.WithKeys("up", "k")),
+	Down:      key.NewBinding(key.WithKeys("down", "j")),
+	Enter:     key.NewBinding(key.WithKeys("enter", "l", "right")),
+	Back:      key.NewBinding(key.WithKeys("backspace", "h", "left")),
+	Space:     key.NewBinding(key.WithKeys(" ")),
+	SelectAll: key.NewBinding(key.WithKeys("a")),
+	Top:       key.NewBinding(key.WithKeys("g")),
+	Bottom:    key.NewBinding(key.WithKeys("G")),
+	Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c")),
 }

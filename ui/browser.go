@@ -17,6 +17,7 @@ type browserModel struct {
 	client      *putio.Client
 	files       []putio.File
 	cursor      int
+	selected    map[int64]bool
 	parentID    int64
 	parents     []int64
 	parentNames []string
@@ -36,8 +37,9 @@ func newBrowserModel(client *putio.Client) browserModel {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(catMauve)
 	return browserModel{
-		client:  client,
-		spinner: sp,
+		client:   client,
+		selected: make(map[int64]bool),
+		spinner:  sp,
 	}
 }
 
@@ -57,6 +59,19 @@ func (m browserModel) loadDir(parentID int64) tea.Cmd {
 		})
 		return filesLoadedMsg{files: children, parentID: parentID}
 	}
+}
+
+func (m browserModel) selectedIDs() []int64 {
+	ids := make([]int64, 0, len(m.selected))
+	for id, sel := range m.selected {
+		if sel {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 && len(m.files) > 0 {
+		ids = append(ids, m.files[m.cursor].ID)
+	}
+	return ids
 }
 
 func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
@@ -105,7 +120,27 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 				m.parents = m.parents[:len(m.parents)-1]
 				m.parentNames = m.parentNames[:len(m.parentNames)-1]
 				m.loading = true
+				m.selected = make(map[int64]bool)
 				return m, tea.Batch(m.loadDir(prev), m.spinner.Tick)
+			}
+		case key.Matches(msg, keys.Space):
+			if len(m.files) > 0 {
+				id := m.files[m.cursor].ID
+				m.selected[id] = !m.selected[id]
+				if !m.selected[id] {
+					delete(m.selected, id)
+				}
+				if m.cursor < len(m.files)-1 {
+					m.cursor++
+				}
+			}
+		case key.Matches(msg, keys.SelectAll):
+			if len(m.selected) > 0 {
+				m.selected = make(map[int64]bool)
+			} else {
+				for _, f := range m.files {
+					m.selected[f.ID] = true
+				}
 			}
 		}
 	}
@@ -172,6 +207,8 @@ func (m browserModel) view() string {
 		}
 	}
 
+	cursorSt := lipgloss.NewStyle().Foreground(catPeach)
+	selectedSt := lipgloss.NewStyle().Foreground(catPink)
 	dirSt := lipgloss.NewStyle().Bold(true).Foreground(catSapphire)
 	normalSt := lipgloss.NewStyle().Foreground(catText)
 	sizeSt := lipgloss.NewStyle().Foreground(catOverlay1)
@@ -180,6 +217,7 @@ func (m browserModel) view() string {
 	if nameWidth < 20 {
 		nameWidth = 40
 	}
+	contentWidth := m.width - 2
 
 	for i := start; i < end; i++ {
 		f := m.files[i]
@@ -188,32 +226,64 @@ func (m browserModel) view() string {
 			cursor = lipgloss.NewStyle().Foreground(catPeach).Render("▸ ")
 		}
 
+		sel := "  "
+		if m.selected[f.ID] {
+			sel = lipgloss.NewStyle().Foreground(catPink).Render("● ")
+		}
+
 		icon := fileIcon(f)
 		name := f.Name
 		var line string
 		if f.IsDir() {
-			line = fmt.Sprintf("%s%s %s", cursor, icon, dirSt.Render(name))
+			line = fmt.Sprintf("%s%s%s %s", cursor, sel, icon, dirSt.Render(name))
 		} else {
 			size := humanSize(f.Size)
-			line = fmt.Sprintf("%s%s %-*s %s", cursor, icon, nameWidth, normalSt.Render(name), sizeSt.Render(size))
+			line = fmt.Sprintf("%s%s%s %-*s %s", cursor, sel, icon, nameWidth, normalSt.Render(name), sizeSt.Render(size))
 		}
 
-		b.WriteString(line + "\n")
+		if i == m.cursor {
+			line = cursorSt.Render(line)
+		} else if m.selected[f.ID] {
+			line = selectedSt.Render(line)
+		}
+
+		// Scrollbar
+		scrollChar := " "
+		if len(m.files) > visibleHeight {
+			thumbPos := int(float64(m.cursor) / float64(len(m.files)-1) * float64(visibleHeight-1))
+			lineIdx := i - start
+			if lineIdx == thumbPos {
+				scrollChar = lipgloss.NewStyle().Foreground(catMauve).Render("┃")
+			} else {
+				scrollChar = lipgloss.NewStyle().Foreground(catSurface1).Render("│")
+			}
+		}
+
+		lineLen := lipgloss.Width(line)
+		if lineLen < contentWidth {
+			line += strings.Repeat(" ", contentWidth-lineLen)
+		}
+
+		b.WriteString(line + scrollChar + "\n")
 	}
 
 	// Pad remaining lines
 	rendered := end - start
 	for i := rendered; i < visibleHeight; i++ {
-		b.WriteString("\n")
+		b.WriteString(strings.Repeat(" ", m.width) + "\n")
 	}
 
 	// Status bar
-	status := fmt.Sprintf(" %d items", len(m.files))
-	b.WriteString(statusBarStyle.Width(m.width).Render(status))
+	selCount := len(m.selected)
+	left := fmt.Sprintf(" %d items", len(m.files))
+	if selCount > 0 {
+		left += fmt.Sprintf(" │ %d selected", selCount)
+	}
+	b.WriteString(statusBarStyle.Width(m.width).Render(left))
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " ↑↓ navigate │ → open │ ← back │ g/G top/bottom │ q quit"
+	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ a all │ g/G top/bottom │ q quit"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

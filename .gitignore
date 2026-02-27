@@ -1,0 +1,10 @@
+# Build artifacts
+teleput
+
+# Local tooling
+.beads/
+.claude/
+
+# Project docs (local only)
+CLAUDE.md
+AGENTS.md

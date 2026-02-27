@@ -14,13 +14,14 @@ import (
 )
 
 type browserModel struct {
-	client      *putio.Client
-	files       []putio.File
-	cursor      int
-	selected    map[int64]bool
-	parentID    int64
-	parents     []int64
-	parentNames []string
+	client        *putio.Client
+	files         []putio.File
+	cursor        int
+	selected      map[int64]bool
+	parentID      int64
+	parents       []int64
+	parentNames   []string
+	cursorHistory map[int64]int
 	loading     bool
 	downloading bool
 	deleting    bool
@@ -40,10 +41,11 @@ func newBrowserModel(client *putio.Client) browserModel {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(catMauve)
 	return browserModel{
-		client:      client,
-		selected:    make(map[int64]bool),
-		downloadDir: ".",
-		spinner:     sp,
+		client:        client,
+		selected:      make(map[int64]bool),
+		cursorHistory: make(map[int64]int),
+		downloadDir:   ".",
+		spinner:       sp,
 	}
 }
 
@@ -83,7 +85,15 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 	case filesLoadedMsg:
 		m.files = msg.files
 		m.parentID = msg.parentID
-		m.cursor = 0
+		if saved, ok := m.cursorHistory[msg.parentID]; ok {
+			m.cursor = saved
+			if m.cursor >= len(m.files) {
+				m.cursor = max(len(m.files)-1, 0)
+			}
+			delete(m.cursorHistory, msg.parentID)
+		} else {
+			m.cursor = 0
+		}
 		m.loading = false
 		return m, nil
 
@@ -113,6 +123,7 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 			}
 		case key.Matches(msg, keys.Enter):
 			if len(m.files) > 0 && m.files[m.cursor].IsDir() {
+				m.cursorHistory[m.parentID] = m.cursor
 				m.parents = append(m.parents, m.parentID)
 				m.parentNames = append(m.parentNames, m.currentDirName())
 				m.loading = true

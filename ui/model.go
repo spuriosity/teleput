@@ -21,6 +21,7 @@ const (
 	viewHelp
 	viewConfirmDelete
 	viewDelete
+	viewRename
 )
 
 type Model struct {
@@ -33,6 +34,7 @@ type Model struct {
 	download downloadModel
 	confirm  confirmModel
 	delete   deleteModel
+	rename   renameModel
 	err      error
 	quitting bool
 }
@@ -67,18 +69,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.confirm.height = msg.Height
 		m.delete.width = msg.Width
 		m.delete.height = msg.Height
+		m.rename.width = msg.Width
+		m.rename.height = msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, keys.Quit):
-			if m.view == viewConfirmDelete || m.view == viewDelete {
+			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename {
 				break
 			}
 			m.quitting = true
 			return m, tea.Quit
 		case key.Matches(msg, keys.Help):
-			if m.view == viewConfirmDelete || m.view == viewDelete {
+			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename {
 				break
 			}
 			if m.view == viewHelp {
@@ -105,6 +109,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.browser.selected = make(map[int64]bool)
 				return m, tea.Batch(m.browser.loadDir(m.browser.parentID), m.browser.spinner.Tick)
 			}
+			if m.view == viewRename && m.rename.done {
+				m.view = viewBrowser
+				return m, tea.Batch(m.browser.loadDir(m.browser.parentID), m.browser.spinner.Tick)
+			}
 			if m.err != nil {
 				m.err = nil
 				m.view = viewBrowser
@@ -129,7 +137,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.delete, cmd = m.delete.update(msg)
 		return m, cmd
 
+	case renameCompleteMsg:
+		var cmd tea.Cmd
+		m.rename, cmd = m.rename.update(msg)
+		return m, cmd
+
 	case errMsg:
+		if m.view == viewRename {
+			var cmd tea.Cmd
+			m.rename, cmd = m.rename.update(msg)
+			return m, cmd
+		}
 		if m.view == viewDelete {
 			var cmd tea.Cmd
 			m.delete, cmd = m.delete.update(msg)
@@ -147,6 +165,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.download, cmd = m.download.update(msg)
 		case viewDelete:
 			m.delete, cmd = m.delete.update(msg)
+		case viewRename:
+			m.rename, cmd = m.rename.update(msg)
 		}
 		return m, cmd
 
@@ -180,12 +200,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = viewConfirmDelete
 			return m, nil
 		}
+		if m.browser.renaming {
+			m.browser.renaming = false
+			f := m.browser.files[m.browser.cursor]
+			m.rename = newRenameModel(m.client, f.ID, f.Name)
+			m.rename.width = m.width
+			m.rename.height = m.height
+			m.view = viewRename
+			return m, m.rename.input.Focus()
+		}
 	case viewDownload:
 		m.download, cmd = m.download.update(msg)
 	case viewConfirmDelete:
 		m.confirm, cmd = m.confirm.update(msg)
 	case viewDelete:
 		m.delete, cmd = m.delete.update(msg)
+	case viewRename:
+		m.rename, cmd = m.rename.update(msg)
 	}
 
 	return m, cmd
@@ -213,6 +244,8 @@ func (m Model) View() string {
 		return m.confirm.view()
 	case viewDelete:
 		return m.delete.view()
+	case viewRename:
+		return m.rename.view()
 	default:
 		return m.browser.view()
 	}
@@ -250,6 +283,7 @@ func (m Model) helpView() string {
 	content.WriteString("\n" + sectionStyle.Render("Actions") + "\n")
 	content.WriteString(row("d", "Download selected") + "\n")
 	content.WriteString(row("x", "Delete selected") + "\n")
+	content.WriteString(row("r", "Rename item") + "\n")
 	content.WriteString(row("D", "Set download directory") + "\n")
 	content.WriteString(row("?", "Toggle this help") + "\n")
 	content.WriteString(row("q / Ctrl+c", "Quit") + "\n")
@@ -283,7 +317,7 @@ type keyMap struct {
 	Up, Down, Enter, Back key.Binding
 	Space, SelectAll      key.Binding
 	Download, SetDir      key.Binding
-	Delete                key.Binding
+	Delete, Rename        key.Binding
 	Help, Quit, Escape    key.Binding
 	Top, Bottom           key.Binding
 }
@@ -298,6 +332,7 @@ var keys = keyMap{
 	Download:  key.NewBinding(key.WithKeys("d")),
 	SetDir:    key.NewBinding(key.WithKeys("D")),
 	Delete:    key.NewBinding(key.WithKeys("x")),
+	Rename:    key.NewBinding(key.WithKeys("r")),
 	Help:      key.NewBinding(key.WithKeys("?")),
 	Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	Escape:    key.NewBinding(key.WithKeys("esc")),

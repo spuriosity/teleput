@@ -16,6 +16,8 @@ type view int
 const (
 	viewBrowser view = iota
 	viewDownload
+	viewConfirmDelete
+	viewDelete
 )
 
 type Model struct {
@@ -26,6 +28,8 @@ type Model struct {
 	view     view
 	browser  browserModel
 	download downloadModel
+	confirm  confirmModel
+	delete   deleteModel
 	err      error
 	quitting bool
 }
@@ -56,17 +60,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.browser.height = msg.Height
 		m.download.width = msg.Width
 		m.download.height = msg.Height
+		m.confirm.width = msg.Width
+		m.confirm.height = msg.Height
+		m.delete.width = msg.Width
+		m.delete.height = msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, keys.Quit):
+			if m.view == viewConfirmDelete || m.view == viewDelete {
+				break
+			}
 			m.quitting = true
 			return m, tea.Quit
 		case key.Matches(msg, keys.Escape):
 			if m.view == viewDownload && m.download.done {
 				m.view = viewBrowser
 				return m, nil
+			}
+			if m.view == viewConfirmDelete {
+				m.view = viewBrowser
+				return m, nil
+			}
+			if m.view == viewDelete && m.delete.done {
+				m.view = viewBrowser
+				m.browser.selected = make(map[int64]bool)
+				return m, tea.Batch(m.browser.loadDir(m.browser.parentID), m.browser.spinner.Tick)
 			}
 			if m.err != nil {
 				m.err = nil
@@ -75,7 +95,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case confirmMsg:
+		ids := m.browser.selectedIDs()
+		m.delete = newDeleteModel(m.client, ids)
+		m.delete.width = m.width
+		m.delete.height = m.height
+		m.view = viewDelete
+		return m, tea.Batch(m.delete.start(), m.delete.spinner.Tick)
+
+	case cancelMsg:
+		m.view = viewBrowser
+		return m, nil
+
+	case deleteCompleteMsg:
+		var cmd tea.Cmd
+		m.delete, cmd = m.delete.update(msg)
+		return m, cmd
+
 	case errMsg:
+		if m.view == viewDelete {
+			var cmd tea.Cmd
+			m.delete, cmd = m.delete.update(msg)
+			return m, cmd
+		}
 		m.err = msg.err
 		return m, nil
 
@@ -86,6 +128,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.browser, cmd = m.browser.update(msg)
 		case viewDownload:
 			m.download, cmd = m.download.update(msg)
+		case viewDelete:
+			m.delete, cmd = m.delete.update(msg)
 		}
 		return m, cmd
 
@@ -110,8 +154,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.download.height = m.height
 			return m, tea.Batch(m.download.start(), m.download.spinner.Tick)
 		}
+		if m.browser.deleting {
+			m.browser.deleting = false
+			ids := m.browser.selectedIDs()
+			m.confirm = newConfirmModel(len(ids))
+			m.confirm.width = m.width
+			m.confirm.height = m.height
+			m.view = viewConfirmDelete
+			return m, nil
+		}
 	case viewDownload:
 		m.download, cmd = m.download.update(msg)
+	case viewConfirmDelete:
+		m.confirm, cmd = m.confirm.update(msg)
+	case viewDelete:
+		m.delete, cmd = m.delete.update(msg)
 	}
 
 	return m, cmd
@@ -128,6 +185,10 @@ func (m Model) View() string {
 	switch m.view {
 	case viewDownload:
 		return m.download.view()
+	case viewConfirmDelete:
+		return m.confirm.view()
+	case viewDelete:
+		return m.delete.view()
 	default:
 		return m.browser.view()
 	}
@@ -141,6 +202,7 @@ type keyMap struct {
 	Up, Down, Enter, Back key.Binding
 	Space, SelectAll      key.Binding
 	Download, SetDir      key.Binding
+	Delete                key.Binding
 	Top, Bottom           key.Binding
 	Quit, Escape          key.Binding
 }
@@ -154,6 +216,7 @@ var keys = keyMap{
 	SelectAll: key.NewBinding(key.WithKeys("a")),
 	Download:  key.NewBinding(key.WithKeys("d")),
 	SetDir:    key.NewBinding(key.WithKeys("D")),
+	Delete:    key.NewBinding(key.WithKeys("x")),
 	Top:       key.NewBinding(key.WithKeys("g")),
 	Bottom:    key.NewBinding(key.WithKeys("G")),
 	Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c")),

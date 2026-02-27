@@ -303,7 +303,7 @@ func (m browserModel) view() string {
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ x delete │ q quit"
+	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ x delete │ ? help"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

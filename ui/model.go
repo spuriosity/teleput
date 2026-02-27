@@ -2,11 +2,13 @@ package ui
 
 import (
 	"context"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	putio "github.com/putdotio/go-putio"
 	"golang.org/x/oauth2"
 )
@@ -16,6 +18,7 @@ type view int
 const (
 	viewBrowser view = iota
 	viewDownload
+	viewHelp
 	viewConfirmDelete
 	viewDelete
 )
@@ -74,7 +77,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
+		case key.Matches(msg, keys.Help):
+			if m.view == viewConfirmDelete || m.view == viewDelete {
+				break
+			}
+			if m.view == viewHelp {
+				m.view = viewBrowser
+			} else {
+				m.view = viewHelp
+			}
+			return m, nil
 		case key.Matches(msg, keys.Escape):
+			if m.view == viewHelp {
+				m.view = viewBrowser
+				return m, nil
+			}
 			if m.view == viewDownload && m.download.done {
 				m.view = viewBrowser
 				return m, nil
@@ -178,11 +195,18 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
 
+	if m.err != nil {
+		return m.errorView()
+	}
+
 	switch m.view {
+	case viewHelp:
+		return m.helpView()
 	case viewDownload:
 		return m.download.view()
 	case viewConfirmDelete:
@@ -194,6 +218,63 @@ func (m Model) View() string {
 	}
 }
 
+func (m Model) helpView() string {
+	keyStyle := lipgloss.NewStyle().Foreground(catMauve).Width(14).Align(lipgloss.Right)
+	descStyle := lipgloss.NewStyle().Foreground(catText)
+	sectionStyle := lipgloss.NewStyle().Foreground(catPeach).Bold(true)
+
+	row := func(k, desc string) string {
+		return keyStyle.Render(k) + "  " + descStyle.Render(desc)
+	}
+
+	var content strings.Builder
+
+	title := lipgloss.NewStyle().
+		Foreground(catMauve).
+		Bold(true).
+		Render("put.io TUI — Keybindings")
+	content.WriteString(title + "\n\n")
+
+	content.WriteString(sectionStyle.Render("Navigation") + "\n")
+	content.WriteString(row("↑ / k", "Move up") + "\n")
+	content.WriteString(row("↓ / j", "Move down") + "\n")
+	content.WriteString(row("→ / Enter / l", "Open folder") + "\n")
+	content.WriteString(row("← / Bksp / h", "Go back") + "\n")
+	content.WriteString(row("g", "Go to top") + "\n")
+	content.WriteString(row("G", "Go to bottom") + "\n")
+
+	content.WriteString("\n" + sectionStyle.Render("Selection") + "\n")
+	content.WriteString(row("Space", "Toggle select") + "\n")
+	content.WriteString(row("a", "Select / deselect all") + "\n")
+
+	content.WriteString("\n" + sectionStyle.Render("Actions") + "\n")
+	content.WriteString(row("d", "Download selected") + "\n")
+	content.WriteString(row("x", "Delete selected") + "\n")
+	content.WriteString(row("D", "Set download directory") + "\n")
+	content.WriteString(row("?", "Toggle this help") + "\n")
+	content.WriteString(row("q / Ctrl+c", "Quit") + "\n")
+	content.WriteString(row("Esc", "Close overlay") + "\n")
+
+	content.WriteString("\n" + dimTextStyle.Render("Press ? or Esc to close"))
+
+	panel := panelStyle.Render(content.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+}
+
+func (m Model) errorView() string {
+	var content strings.Builder
+
+	title := errorTextStyle.Render("Error")
+	content.WriteString(title + "\n\n")
+	content.WriteString(lipgloss.NewStyle().Foreground(catText).Render(m.err.Error()))
+	content.WriteString("\n\n")
+	content.WriteString(dimTextStyle.Render("Press Esc to dismiss, q to quit"))
+
+	panel := errorPanelStyle.Render(content.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+}
+
+// Messages
 type errMsg struct{ err error }
 
 func (e errMsg) Error() string { return e.err.Error() }
@@ -203,8 +284,8 @@ type keyMap struct {
 	Space, SelectAll      key.Binding
 	Download, SetDir      key.Binding
 	Delete                key.Binding
+	Help, Quit, Escape    key.Binding
 	Top, Bottom           key.Binding
-	Quit, Escape          key.Binding
 }
 
 var keys = keyMap{
@@ -217,8 +298,9 @@ var keys = keyMap{
 	Download:  key.NewBinding(key.WithKeys("d")),
 	SetDir:    key.NewBinding(key.WithKeys("D")),
 	Delete:    key.NewBinding(key.WithKeys("x")),
-	Top:       key.NewBinding(key.WithKeys("g")),
-	Bottom:    key.NewBinding(key.WithKeys("G")),
+	Help:      key.NewBinding(key.WithKeys("?")),
 	Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	Escape:    key.NewBinding(key.WithKeys("esc")),
+	Top:       key.NewBinding(key.WithKeys("g")),
+	Bottom:    key.NewBinding(key.WithKeys("G")),
 }

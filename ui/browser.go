@@ -23,6 +23,7 @@ type browserModel struct {
 	parentNames []string
 	loading     bool
 	downloading bool
+	deleting    bool
 	downloadDir string
 	width       int
 	height      int
@@ -148,6 +149,10 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 		case key.Matches(msg, keys.Download):
 			if len(m.files) > 0 {
 				m.downloading = true
+			}
+		case key.Matches(msg, keys.Delete):
+			if len(m.files) > 0 {
+				m.deleting = true
 			}
 		case key.Matches(msg, keys.SetDir):
 			// TODO: text input for download dir
@@ -298,7 +303,7 @@ func (m browserModel) view() string {
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ q quit"
+	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ x delete │ q quit"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

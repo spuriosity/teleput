@@ -22,6 +22,8 @@ type browserModel struct {
 	parents     []int64
 	parentNames []string
 	loading     bool
+	downloading bool
+	downloadDir string
 	width       int
 	height      int
 	spinner     spinner.Model
@@ -37,9 +39,10 @@ func newBrowserModel(client *putio.Client) browserModel {
 	sp.Spinner = spinner.MiniDot
 	sp.Style = lipgloss.NewStyle().Foreground(catMauve)
 	return browserModel{
-		client:   client,
-		selected: make(map[int64]bool),
-		spinner:  sp,
+		client:      client,
+		selected:    make(map[int64]bool),
+		downloadDir: ".",
+		spinner:     sp,
 	}
 }
 
@@ -142,6 +145,12 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 					m.selected[f.ID] = true
 				}
 			}
+		case key.Matches(msg, keys.Download):
+			if len(m.files) > 0 {
+				m.downloading = true
+			}
+		case key.Matches(msg, keys.SetDir):
+			// TODO: text input for download dir
 		}
 	}
 	return m, nil
@@ -279,11 +288,17 @@ func (m browserModel) view() string {
 	if selCount > 0 {
 		left += fmt.Sprintf(" │ %d selected", selCount)
 	}
-	b.WriteString(statusBarStyle.Width(m.width).Render(left))
+	right := fmt.Sprintf("↓ %s ", m.downloadDir)
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	statusContent := left + strings.Repeat(" ", gap) + right
+	b.WriteString(statusBarStyle.Width(m.width).Render(statusContent))
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ a all │ g/G top/bottom │ q quit"
+	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ q quit"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()
@@ -334,6 +349,8 @@ func fileIcon(f putio.File) string {
 		return "🖼 "
 	case strings.Contains(ct, "zip") || strings.Contains(ct, "rar") || strings.Contains(ct, "tar"):
 		return "📦"
+	case strings.Contains(ct, "pdf"):
+		return "📄"
 	default:
 		return "📄"
 	}
@@ -344,8 +361,11 @@ func humanSize(bytes int64) string {
 		KB = 1024
 		MB = KB * 1024
 		GB = MB * 1024
+		TB = GB * 1024
 	)
 	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
 	case bytes >= GB:
 		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
 	case bytes >= MB:

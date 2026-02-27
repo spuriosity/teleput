@@ -7,6 +7,7 @@ var (
 	catPink      = lipgloss.Color("#f5c2e7")
 	catMauve     = lipgloss.Color("#cba6f7")
 	catPeach     = lipgloss.Color("#fab387")
+	catGreen     = lipgloss.Color("#a6e3a1")
 	catSapphire  = lipgloss.Color("#74c7ec")
 	catText      = lipgloss.Color("#cdd6f4")
 	catSubtext1  = lipgloss.Color("#bac2de")
@@ -34,4 +35,16 @@ var (
 			Foreground(catOverlay1).
 			Background(catSurface0).
 			Padding(0, 1)
+
+	panelStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(catMauve).
+			Padding(1, 2)
+
+	dimTextStyle = lipgloss.NewStyle().
+			Foreground(catOverlay1)
+
+	successStyle = lipgloss.NewStyle().
+			Foreground(catGreen).
+			Bold(true)
 )

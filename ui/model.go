@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	putio "github.com/putdotio/go-putio"
 	"golang.org/x/oauth2"
@@ -30,7 +31,7 @@ func NewModel(token string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.browser.loadDir(0)
+	return tea.Batch(m.browser.loadDir(0), m.browser.spinner.Tick)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -47,6 +48,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.browser, cmd = m.browser.update(msg)
+		return m, cmd
 
 	case errMsg:
 		m.err = msg.err
@@ -72,13 +78,16 @@ type errMsg struct{ err error }
 
 type keyMap struct {
 	Up, Down, Enter, Back key.Binding
+	Top, Bottom           key.Binding
 	Quit                  key.Binding
 }
 
 var keys = keyMap{
-	Up:    key.NewBinding(key.WithKeys("up", "k")),
-	Down:  key.NewBinding(key.WithKeys("down", "j")),
-	Enter: key.NewBinding(key.WithKeys("enter", "l", "right")),
-	Back:  key.NewBinding(key.WithKeys("backspace", "h", "left")),
-	Quit:  key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	Up:     key.NewBinding(key.WithKeys("up", "k")),
+	Down:   key.NewBinding(key.WithKeys("down", "j")),
+	Enter:  key.NewBinding(key.WithKeys("enter", "l", "right")),
+	Back:   key.NewBinding(key.WithKeys("backspace", "h", "left")),
+	Top:    key.NewBinding(key.WithKeys("g")),
+	Bottom: key.NewBinding(key.WithKeys("G")),
+	Quit:   key.NewBinding(key.WithKeys("q", "ctrl+c")),
 }

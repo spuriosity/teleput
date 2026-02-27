@@ -7,20 +7,23 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	putio "github.com/putdotio/go-putio"
 )
 
 type browserModel struct {
-	client   *putio.Client
-	files    []putio.File
-	cursor   int
-	parentID int64
-	parents  []int64
-	loading  bool
-	width    int
-	height   int
+	client      *putio.Client
+	files       []putio.File
+	cursor      int
+	parentID    int64
+	parents     []int64
+	parentNames []string
+	loading     bool
+	width       int
+	height      int
+	spinner     spinner.Model
 }
 
 type filesLoadedMsg struct {
@@ -29,8 +32,12 @@ type filesLoadedMsg struct {
 }
 
 func newBrowserModel(client *putio.Client) browserModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+	sp.Style = lipgloss.NewStyle().Foreground(catMauve)
 	return browserModel{
-		client: client,
+		client:  client,
+		spinner: sp,
 	}
 }
 
@@ -61,6 +68,11 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 		m.loading = false
 		return m, nil
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	case tea.KeyMsg:
 		if m.loading {
 			return m, nil
@@ -74,22 +86,37 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 			if m.cursor < len(m.files)-1 {
 				m.cursor++
 			}
+		case key.Matches(msg, keys.Top):
+			m.cursor = 0
+		case key.Matches(msg, keys.Bottom):
+			if len(m.files) > 0 {
+				m.cursor = len(m.files) - 1
+			}
 		case key.Matches(msg, keys.Enter):
 			if len(m.files) > 0 && m.files[m.cursor].IsDir() {
 				m.parents = append(m.parents, m.parentID)
+				m.parentNames = append(m.parentNames, m.currentDirName())
 				m.loading = true
-				return m, m.loadDir(m.files[m.cursor].ID)
+				return m, tea.Batch(m.loadDir(m.files[m.cursor].ID), m.spinner.Tick)
 			}
 		case key.Matches(msg, keys.Back):
 			if len(m.parents) > 0 {
 				prev := m.parents[len(m.parents)-1]
 				m.parents = m.parents[:len(m.parents)-1]
+				m.parentNames = m.parentNames[:len(m.parentNames)-1]
 				m.loading = true
-				return m, m.loadDir(prev)
+				return m, tea.Batch(m.loadDir(prev), m.spinner.Tick)
 			}
 		}
 	}
 	return m, nil
+}
+
+func (m browserModel) currentDirName() string {
+	if m.parentID == 0 {
+		return "Your Files"
+	}
+	return fmt.Sprintf("ID:%d", m.parentID)
 }
 
 func (m browserModel) view() string {
@@ -99,14 +126,15 @@ func (m browserModel) view() string {
 
 	var b strings.Builder
 
-	// Title bar
-	title := lipgloss.NewStyle().Bold(true).Render("teleput")
-	b.WriteString(titleBarStyle.Width(m.width).Render(title))
+	// Title bar with breadcrumbs
+	b.WriteString(m.titleBar())
 	b.WriteString("\n")
 
 	if m.loading {
 		spacer := strings.Repeat("\n", m.height/3)
-		loading := lipgloss.NewStyle().Foreground(catSubtext0).Render("Loading...")
+		loading := lipgloss.NewStyle().Foreground(catSubtext0).Render(
+			m.spinner.View() + " Loading...",
+		)
 		centered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, loading)
 		b.WriteString(spacer)
 		b.WriteString(centered)
@@ -122,34 +150,123 @@ func (m browserModel) view() string {
 		return b.String()
 	}
 
+	// Calculate visible area
+	headerLines := 1
+	footerLines := 2
+	visibleHeight := m.height - headerLines - footerLines
+	if visibleHeight < 1 {
+		visibleHeight = 10
+	}
+
+	// Viewport scrolling
+	start := 0
+	if m.cursor >= visibleHeight {
+		start = m.cursor - visibleHeight + 1
+	}
+	end := start + visibleHeight
+	if end > len(m.files) {
+		end = len(m.files)
+		start = end - visibleHeight
+		if start < 0 {
+			start = 0
+		}
+	}
+
 	dirSt := lipgloss.NewStyle().Bold(true).Foreground(catSapphire)
 	normalSt := lipgloss.NewStyle().Foreground(catText)
 	sizeSt := lipgloss.NewStyle().Foreground(catOverlay1)
 
-	for i, f := range m.files {
+	nameWidth := m.width - 30
+	if nameWidth < 20 {
+		nameWidth = 40
+	}
+
+	for i := start; i < end; i++ {
+		f := m.files[i]
 		cursor := "  "
 		if i == m.cursor {
-			cursor = lipgloss.NewStyle().Foreground(catPeach).Render("> ")
+			cursor = lipgloss.NewStyle().Foreground(catPeach).Render("▸ ")
 		}
 
+		icon := fileIcon(f)
 		name := f.Name
 		var line string
 		if f.IsDir() {
-			line = fmt.Sprintf("%s%s %s", cursor, "📁", dirSt.Render(name))
+			line = fmt.Sprintf("%s%s %s", cursor, icon, dirSt.Render(name))
 		} else {
 			size := humanSize(f.Size)
-			line = fmt.Sprintf("%s%s %s  %s", cursor, "📄", normalSt.Render(name), sizeSt.Render(size))
+			line = fmt.Sprintf("%s%s %-*s %s", cursor, icon, nameWidth, normalSt.Render(name), sizeSt.Render(size))
 		}
 
 		b.WriteString(line + "\n")
 	}
 
+	// Pad remaining lines
+	rendered := end - start
+	for i := rendered; i < visibleHeight; i++ {
+		b.WriteString("\n")
+	}
+
 	// Status bar
 	status := fmt.Sprintf(" %d items", len(m.files))
-	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
+	b.WriteString("\n")
+
+	// Hint bar
+	hints := " ↑↓ navigate │ → open │ ← back │ g/G top/bottom │ q quit"
+	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()
+}
+
+func (m browserModel) titleBar() string {
+	brand := lipgloss.NewStyle().Bold(true).Render("teleput")
+
+	crumbs := m.breadcrumbs()
+	var trail string
+	if len(crumbs) > 1 {
+		dimCrumb := lipgloss.NewStyle().Foreground(catCrust)
+		brightCrumb := lipgloss.NewStyle().Foreground(catBase).Bold(true)
+		sep := lipgloss.NewStyle().Foreground(catCrust).Render(" / ")
+
+		parts := make([]string, len(crumbs))
+		for i, c := range crumbs {
+			if i == len(crumbs)-1 {
+				parts[i] = brightCrumb.Render(c)
+			} else {
+				parts[i] = dimCrumb.Render(c)
+			}
+		}
+		trail = " │ " + strings.Join(parts, sep)
+	}
+
+	content := brand + trail
+	return titleBarStyle.Width(m.width).Render(content)
+}
+
+func (m browserModel) breadcrumbs() []string {
+	parts := []string{"Your Files"}
+	parts = append(parts, m.parentNames...)
+	return parts
+}
+
+func fileIcon(f putio.File) string {
+	if f.IsDir() {
+		return "📁"
+	}
+	ct := f.ContentType
+	switch {
+	case strings.HasPrefix(ct, "video/"):
+		return "🎬"
+	case strings.HasPrefix(ct, "audio/"):
+		return "🎵"
+	case strings.HasPrefix(ct, "image/"):
+		return "🖼 "
+	case strings.Contains(ct, "zip") || strings.Contains(ct, "rar") || strings.Contains(ct, "tar"):
+		return "📦"
+	default:
+		return "📄"
+	}
 }
 
 func humanSize(bytes int64) string {

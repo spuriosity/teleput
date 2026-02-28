@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -22,21 +23,29 @@ const (
 	viewConfirmDelete
 	viewDelete
 	viewRename
+	viewTransfers
+	viewAddMagnet
+	viewConfirmCancelTransfer
+	viewCancelTransfer
 )
 
 type Model struct {
-	client   *putio.Client
-	token    string
-	width    int
-	height   int
-	view     view
-	browser  browserModel
-	download downloadModel
-	confirm  confirmModel
-	delete   deleteModel
-	rename   renameModel
-	err      error
-	quitting bool
+	client         *putio.Client
+	token          string
+	width          int
+	height         int
+	view           view
+	browser        browserModel
+	download       downloadModel
+	confirm        confirmModel
+	delete         deleteModel
+	rename         renameModel
+	transfers      transfersModel
+	magnet         magnetModel
+	transferCancel transferCancelModel
+	err            error
+	quitting       bool
+	startView      view
 }
 
 func NewModel(token string) Model {
@@ -45,14 +54,35 @@ func NewModel(token string) Model {
 	client := putio.NewClient(httpClient)
 
 	return Model{
-		client:  client,
-		token:   token,
-		view:    viewBrowser,
-		browser: newBrowserModel(client),
+		client:    client,
+		token:     token,
+		view:      viewBrowser,
+		startView: viewBrowser,
+		browser:   newBrowserModel(client),
+		transfers: newTransfersModel(client),
+	}
+}
+
+func NewTransfersModel(token string) Model {
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	httpClient := oauth2.NewClient(context.Background(), ts)
+	client := putio.NewClient(httpClient)
+
+	return Model{
+		client:    client,
+		token:     token,
+		view:      viewTransfers,
+		startView: viewTransfers,
+		browser:   newBrowserModel(client),
+		transfers: newTransfersModel(client),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.startView == viewTransfers {
+		m.transfers.loading = true
+		return tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+	}
 	return tea.Batch(m.browser.loadDir(0), m.browser.spinner.Tick)
 }
 
@@ -71,18 +101,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.delete.height = msg.Height
 		m.rename.width = msg.Width
 		m.rename.height = msg.Height
+		m.transfers.width = msg.Width
+		m.transfers.height = msg.Height
+		m.magnet.width = msg.Width
+		m.magnet.height = msg.Height
+		m.transferCancel.width = msg.Width
+		m.transferCancel.height = msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, keys.Quit):
-			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename {
+			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename ||
+				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer {
 				break
 			}
 			m.quitting = true
 			return m, tea.Quit
 		case key.Matches(msg, keys.Help):
-			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename {
+			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename ||
+				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer {
 				break
 			}
 			if m.view == viewHelp {
@@ -91,6 +129,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = viewHelp
 			}
 			return m, nil
+		case key.Matches(msg, keys.Tab):
+			if m.view == viewBrowser {
+				m.transfers.loading = true
+				m.view = viewTransfers
+				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+			}
+			if m.view == viewTransfers {
+				m.view = viewBrowser
+				return m, nil
+			}
 		case key.Matches(msg, keys.Escape):
 			if m.view == viewHelp {
 				m.view = viewBrowser
@@ -113,14 +161,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = viewBrowser
 				return m, tea.Batch(m.browser.loadDir(m.browser.parentID), m.browser.spinner.Tick)
 			}
+			if m.view == viewTransfers {
+				m.view = viewBrowser
+				return m, nil
+			}
+			if m.view == viewAddMagnet && m.magnet.done {
+				m.view = viewTransfers
+				m.transfers.loading = true
+				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+			}
+			if m.view == viewConfirmCancelTransfer {
+				m.view = viewTransfers
+				return m, nil
+			}
+			if m.view == viewCancelTransfer && m.transferCancel.done {
+				m.view = viewTransfers
+				m.transfers.selected = make(map[int64]bool)
+				m.transfers.loading = true
+				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+			}
 			if m.err != nil {
 				m.err = nil
-				m.view = viewBrowser
+				if m.view == viewTransfers || m.view == viewAddMagnet || m.view == viewCancelTransfer {
+					m.view = viewTransfers
+				} else {
+					m.view = viewBrowser
+				}
 				return m, nil
 			}
 		}
 
 	case confirmMsg:
+		if m.view == viewConfirmCancelTransfer {
+			ids := m.transfers.selectedIDs()
+			m.transferCancel = newTransferCancelModel(m.client, ids)
+			m.transferCancel.width = m.width
+			m.transferCancel.height = m.height
+			m.view = viewCancelTransfer
+			return m, tea.Batch(m.transferCancel.start(), m.transferCancel.spinner.Tick)
+		}
 		ids := m.browser.selectedIDs()
 		m.delete = newDeleteModel(m.client, ids)
 		m.delete.width = m.width
@@ -129,6 +208,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.delete.start(), m.delete.spinner.Tick)
 
 	case cancelMsg:
+		if m.view == viewAddMagnet {
+			m.view = viewTransfers
+			return m, nil
+		}
+		if m.view == viewConfirmCancelTransfer {
+			m.view = viewTransfers
+			return m, nil
+		}
 		m.view = viewBrowser
 		return m, nil
 
@@ -142,6 +229,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rename, cmd = m.rename.update(msg)
 		return m, cmd
 
+	case magnetCompleteMsg:
+		var cmd tea.Cmd
+		m.magnet, cmd = m.magnet.update(msg)
+		return m, cmd
+
+	case transferCancelCompleteMsg:
+		var cmd tea.Cmd
+		m.transferCancel, cmd = m.transferCancel.update(msg)
+		return m, cmd
+
+	case transferRetryCompleteMsg:
+		m.transfers.loading = true
+		return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+
+	case transferCleanCompleteMsg:
+		m.transfers.loading = true
+		return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+
+	case transfersLoadedMsg:
+		var cmd tea.Cmd
+		m.transfers, cmd = m.transfers.update(msg)
+		return m, cmd
+
+	case transfersTickMsg:
+		if m.view == viewTransfers {
+			var cmd tea.Cmd
+			m.transfers, cmd = m.transfers.update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case errMsg:
 		if m.view == viewRename {
 			var cmd tea.Cmd
@@ -151,6 +269,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.view == viewDelete {
 			var cmd tea.Cmd
 			m.delete, cmd = m.delete.update(msg)
+			return m, cmd
+		}
+		if m.view == viewAddMagnet {
+			var cmd tea.Cmd
+			m.magnet, cmd = m.magnet.update(msg)
+			return m, cmd
+		}
+		if m.view == viewCancelTransfer {
+			var cmd tea.Cmd
+			m.transferCancel, cmd = m.transferCancel.update(msg)
 			return m, cmd
 		}
 		m.err = msg.err
@@ -167,6 +295,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.delete, cmd = m.delete.update(msg)
 		case viewRename:
 			m.rename, cmd = m.rename.update(msg)
+		case viewTransfers:
+			m.transfers, cmd = m.transfers.update(msg)
+		case viewAddMagnet:
+			m.magnet, cmd = m.magnet.update(msg)
+		case viewCancelTransfer:
+			m.transferCancel, cmd = m.transferCancel.update(msg)
 		}
 		return m, cmd
 
@@ -217,6 +351,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.delete, cmd = m.delete.update(msg)
 	case viewRename:
 		m.rename, cmd = m.rename.update(msg)
+	case viewTransfers:
+		m.transfers, cmd = m.transfers.update(msg)
+		if m.transfers.cancelling {
+			m.transfers.cancelling = false
+			ids := m.transfers.selectedIDs()
+			m.confirm = newConfirmCancelModel(len(ids))
+			m.confirm.width = m.width
+			m.confirm.height = m.height
+			m.view = viewConfirmCancelTransfer
+			return m, nil
+		}
+		if m.transfers.addingMagnet {
+			m.transfers.addingMagnet = false
+			m.magnet = newMagnetModel(m.client)
+			m.magnet.width = m.width
+			m.magnet.height = m.height
+			m.view = viewAddMagnet
+			return m, m.magnet.input.Focus()
+		}
+		if m.transfers.retrying {
+			m.transfers.retrying = false
+			id := m.transfers.transfers[m.transfers.cursor].ID
+			return m, retryTransfer(m.client, id)
+		}
+		if m.transfers.cleaning {
+			m.transfers.cleaning = false
+			return m, cleanTransfers(m.client)
+		}
+	case viewAddMagnet:
+		m.magnet, cmd = m.magnet.update(msg)
+	case viewConfirmCancelTransfer:
+		m.confirm, cmd = m.confirm.update(msg)
+	case viewCancelTransfer:
+		m.transferCancel, cmd = m.transferCancel.update(msg)
 	}
 
 	return m, cmd
@@ -240,12 +408,18 @@ func (m Model) View() string {
 		return m.helpView()
 	case viewDownload:
 		return m.download.view()
-	case viewConfirmDelete:
+	case viewConfirmDelete, viewConfirmCancelTransfer:
 		return m.confirm.view()
 	case viewDelete:
 		return m.delete.view()
 	case viewRename:
 		return m.rename.view()
+	case viewTransfers:
+		return m.transfers.view()
+	case viewAddMagnet:
+		return m.magnet.view()
+	case viewCancelTransfer:
+		return m.transferCancel.view()
 	default:
 		return m.browser.view()
 	}
@@ -282,12 +456,18 @@ func (m Model) helpView() string {
 
 	content.WriteString("\n" + sectionStyle.Render("Actions") + "\n")
 	content.WriteString(row("d", "Download selected") + "\n")
-	content.WriteString(row("x", "Delete selected") + "\n")
+	content.WriteString(row("x", "Delete / cancel selected") + "\n")
 	content.WriteString(row("r", "Rename item") + "\n")
 	content.WriteString(row("D", "Set download directory") + "\n")
+	content.WriteString(row("Tab", "Toggle transfers view") + "\n")
 	content.WriteString(row("?", "Toggle this help") + "\n")
 	content.WriteString(row("q / Ctrl+c", "Quit") + "\n")
-	content.WriteString(row("Esc", "Close overlay") + "\n")
+	content.WriteString(row("Esc", "Close overlay / go back") + "\n")
+
+	content.WriteString("\n" + sectionStyle.Render("Transfers") + "\n")
+	content.WriteString(row("m", "Add magnet / URL") + "\n")
+	content.WriteString(row("R", "Retry failed transfer") + "\n")
+	content.WriteString(row("C", "Clean completed") + "\n")
 
 	content.WriteString("\n" + dimTextStyle.Render("Press ? or Esc to close"))
 
@@ -313,6 +493,42 @@ type errMsg struct{ err error }
 
 func (e errMsg) Error() string { return e.err.Error() }
 
+type transferRetryCompleteMsg struct{}
+type transferCleanCompleteMsg struct{}
+
+func retryTransfer(client *putio.Client, id int64) tea.Cmd {
+	return func() tea.Msg {
+		_, err := client.Transfers.Retry(context.Background(), id)
+		if err != nil {
+			return errMsg{err}
+		}
+		return transferRetryCompleteMsg{}
+	}
+}
+
+func cleanTransfers(client *putio.Client) tea.Cmd {
+	return func() tea.Msg {
+		err := client.Transfers.Clean(context.Background())
+		if err != nil {
+			return errMsg{err}
+		}
+		return transferCleanCompleteMsg{}
+	}
+}
+
+func newConfirmCancelModel(count int) confirmModel {
+	msg := fmt.Sprintf("Cancel %d transfer", count)
+	if count != 1 {
+		msg += "s"
+	}
+	msg += "?"
+	return confirmModel{
+		title:   "Confirm Cancel",
+		message: msg,
+		count:   count,
+	}
+}
+
 type keyMap struct {
 	Up, Down, Enter, Back key.Binding
 	Space, SelectAll      key.Binding
@@ -320,6 +536,10 @@ type keyMap struct {
 	Delete, Rename        key.Binding
 	Help, Quit, Escape    key.Binding
 	Top, Bottom           key.Binding
+	Tab                   key.Binding
+	AddMagnet             key.Binding
+	Retry                 key.Binding
+	Clean                 key.Binding
 }
 
 var keys = keyMap{
@@ -338,4 +558,8 @@ var keys = keyMap{
 	Escape:    key.NewBinding(key.WithKeys("esc")),
 	Top:       key.NewBinding(key.WithKeys("g")),
 	Bottom:    key.NewBinding(key.WithKeys("G")),
+	Tab:       key.NewBinding(key.WithKeys("tab")),
+	AddMagnet: key.NewBinding(key.WithKeys("m")),
+	Retry:     key.NewBinding(key.WithKeys("R")),
+	Clean:     key.NewBinding(key.WithKeys("C")),
 }

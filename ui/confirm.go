@@ -13,6 +13,7 @@ type confirmMsg struct{}
 type cancelMsg struct{}
 
 type confirmModel struct {
+	title   string
 	message string
 	count   int
 	width   int
@@ -26,6 +27,7 @@ func newConfirmModel(count int) confirmModel {
 	}
 	msg += "?"
 	return confirmModel{
+		title:   "Confirm Delete",
 		message: msg,
 		count:   count,
 	}
@@ -51,10 +53,14 @@ func (m confirmModel) view() string {
 
 	var content strings.Builder
 
+	titleText := m.title
+	if titleText == "" {
+		titleText = "Confirm"
+	}
 	title := lipgloss.NewStyle().
 		Foreground(catPeach).
 		Bold(true).
-		Render("Confirm Delete")
+		Render(titleText)
 	content.WriteString(title + "\n\n")
 
 	content.WriteString(lipgloss.NewStyle().Foreground(catText).Render(m.message))

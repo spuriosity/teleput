@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -131,6 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, keys.Tab):
 			if m.view == viewBrowser {
+				m.browser.fromTransfers = false
 				m.transfers.loading = true
 				m.view = viewTransfers
 				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
@@ -138,6 +140,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.view == viewTransfers {
 				m.view = viewBrowser
 				return m, nil
+			}
+		case key.Matches(msg, keys.Enter):
+			if m.view == viewDownload && m.download.done {
+				return m, m.download.browseFiles()
 			}
 		case key.Matches(msg, keys.Escape):
 			if m.view == viewHelp {
@@ -181,13 +187,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
 			}
 			if m.err != nil {
-				m.err = nil
-				if m.view == viewTransfers || m.view == viewAddMagnet || m.view == viewCancelTransfer {
-					m.view = viewTransfers
-				} else {
-					m.view = viewBrowser
-				}
-				return m, nil
+				return m, m.dismissError()
+			}
+		case key.Matches(msg, keys.Back):
+			if m.err != nil {
+				return m, m.dismissError()
 			}
 		}
 
@@ -238,6 +242,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.transferCancel, cmd = m.transferCancel.update(msg)
 		return m, cmd
+
+	case downloadBrowseMsg:
+		m.browser.parents = nil
+		m.browser.parentNames = nil
+		m.browser.cursorHistory = make(map[int64]int)
+		m.browser.selected = make(map[int64]bool)
+		m.browser.loading = true
+		m.view = viewBrowser
+		return m, tea.Batch(m.browser.loadDir(msg.parentID), m.browser.spinner.Tick)
 
 	case transferRetryCompleteMsg:
 		m.transfers.loading = true
@@ -317,6 +330,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewBrowser:
 		m.browser, cmd = m.browser.update(msg)
+		if m.browser.returningToTransfers {
+			m.browser.returningToTransfers = false
+			m.browser.fromTransfers = false
+			m.transfers.loading = true
+			m.view = viewTransfers
+			return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+		}
 		if m.browser.downloading {
 			m.browser.downloading = false
 			m.view = viewDownload
@@ -378,6 +398,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.transfers.cleaning {
 			m.transfers.cleaning = false
 			return m, cleanTransfers(m.client)
+		}
+		if m.transfers.browsingFiles {
+			m.transfers.browsingFiles = false
+			fileID := m.transfers.browseFileID
+			m.browser.parents = nil
+			m.browser.parentNames = nil
+			m.browser.cursorHistory = make(map[int64]int)
+			m.browser.selected = make(map[int64]bool)
+			m.browser.fromTransfers = true
+			m.browser.loading = true
+			m.view = viewBrowser
+			return m, tea.Batch(m.browser.loadDir(fileID), m.browser.spinner.Tick)
 		}
 	case viewAddMagnet:
 		m.magnet, cmd = m.magnet.update(msg)
@@ -465,6 +497,7 @@ func (m Model) helpView() string {
 	content.WriteString(row("Esc", "Close overlay / go back") + "\n")
 
 	content.WriteString("\n" + sectionStyle.Render("Transfers") + "\n")
+	content.WriteString(row("→ / Enter / l", "Browse transfer files") + "\n")
 	content.WriteString(row("m", "Add magnet / URL") + "\n")
 	content.WriteString(row("R", "Retry failed transfer") + "\n")
 	content.WriteString(row("C", "Clean completed") + "\n")
@@ -482,10 +515,22 @@ func (m Model) errorView() string {
 	content.WriteString(title + "\n\n")
 	content.WriteString(lipgloss.NewStyle().Foreground(catText).Render(m.err.Error()))
 	content.WriteString("\n\n")
-	content.WriteString(dimTextStyle.Render("Press Esc to dismiss, q to quit"))
+	content.WriteString(dimTextStyle.Render("← or Esc to dismiss, q to quit"))
 
 	panel := errorPanelStyle.Render(content.String())
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+}
+
+func (m *Model) dismissError() tea.Cmd {
+	m.err = nil
+	m.browser.loading = false
+	m.transfers.loading = false
+	if m.view == viewTransfers || m.view == viewAddMagnet || m.view == viewCancelTransfer {
+		m.view = viewTransfers
+	} else {
+		m.view = viewBrowser
+	}
+	return nil
 }
 
 // Messages
@@ -500,6 +545,10 @@ func retryTransfer(client *putio.Client, id int64) tea.Cmd {
 	return func() tea.Msg {
 		_, err := client.Transfers.Retry(context.Background(), id)
 		if err != nil {
+			var apiErr *putio.ErrorResponse
+			if errors.As(err, &apiErr) && apiErr.Response.StatusCode == 404 {
+				return errMsg{fmt.Errorf("transfer no longer exists on put.io — use C to clean up")}
+			}
 			return errMsg{err}
 		}
 		return transferRetryCompleteMsg{}

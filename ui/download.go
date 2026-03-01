@@ -36,6 +36,7 @@ type downloadModel struct {
 }
 
 type downloadCompleteMsg struct{ status string }
+type downloadBrowseMsg struct{ parentID int64 }
 type downloadProgressMsg struct {
 	written int64
 	total   int64
@@ -72,6 +73,19 @@ func newDownloadModel(client *putio.Client, token string, fileIDs []int64, dir s
 func waitForProgress(sub chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-sub
+	}
+}
+
+func (m downloadModel) browseFiles() tea.Cmd {
+	return func() tea.Msg {
+		if len(m.fileIDs) == 0 {
+			return errMsg{fmt.Errorf("no files to browse")}
+		}
+		file, err := m.client.Files.Get(context.Background(), m.fileIDs[0])
+		if err != nil {
+			return errMsg{fmt.Errorf("files not found on put.io")}
+		}
+		return downloadBrowseMsg{parentID: file.ParentID}
 	}
 }
 
@@ -220,7 +234,7 @@ func (m downloadModel) view() string {
 	if m.done {
 		content.WriteString("\n")
 		content.WriteString(successStyle.Render("  ✓ Download complete") + "\n\n")
-		content.WriteString(dimTextStyle.Render("  Press Esc to return"))
+		content.WriteString(dimTextStyle.Render("  → Browse files  Esc return"))
 	}
 
 	panel := panelStyle.Width(panelWidth).Render(content.String())

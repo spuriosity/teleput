@@ -1,12 +1,14 @@
 package auth
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"os"
+	"strings"
 
 	"github.com/pkg/browser"
 )
@@ -20,10 +22,6 @@ type oobCodeResponse struct {
 	Code string `json:"code"`
 }
 
-type oobTokenResponse struct {
-	OAuthToken string `json:"oauth_token"`
-}
-
 func Authenticate(ctx context.Context) (string, error) {
 	code, err := getOOBCode()
 	if err != nil {
@@ -35,8 +33,17 @@ func Authenticate(ctx context.Context) (string, error) {
 	fmt.Printf("If the browser doesn't open, visit:\n  %s\n\n", approveURL)
 	_ = browser.OpenURL(approveURL)
 
-	fmt.Println("Waiting for approval...")
-	return pollForToken(ctx, code)
+	fmt.Print("Paste your token here: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("reading token: %w", err)
+	}
+	token := strings.TrimSpace(line)
+	if token == "" {
+		return "", fmt.Errorf("no token provided")
+	}
+	return token, nil
 }
 
 func getOOBCode() (string, error) {
@@ -60,54 +67,4 @@ func getOOBCode() (string, error) {
 		return "", err
 	}
 	return result.Code, nil
-}
-
-func pollForToken(ctx context.Context, code string) (string, error) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	timeout := time.After(5 * time.Minute)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-timeout:
-			return "", fmt.Errorf("authentication timed out after 5 minutes")
-		case <-ticker.C:
-			token, err := checkCode(code)
-			if err != nil {
-				continue
-			}
-			if token != "" {
-				return token, nil
-			}
-		}
-	}
-}
-
-func checkCode(code string) (string, error) {
-	resp, err := http.Get(BaseURL + "/oauth2/oob/code/" + code)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("not yet approved")
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var result oobTokenResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", err
-	}
-	if result.OAuthToken == "" {
-		return "", fmt.Errorf("no token yet")
-	}
-	return result.OAuthToken, nil
 }

@@ -22,14 +22,16 @@ type browserModel struct {
 	parents       []int64
 	parentNames   []string
 	cursorHistory map[int64]int
-	loading     bool
-	downloading bool
-	deleting    bool
-	renaming    bool
-	downloadDir string
-	width       int
-	height      int
-	spinner     spinner.Model
+	loading              bool
+	downloading          bool
+	deleting             bool
+	renaming             bool
+	fromTransfers        bool
+	returningToTransfers bool
+	downloadDir          string
+	width                int
+	height               int
+	spinner              spinner.Model
 }
 
 type filesLoadedMsg struct {
@@ -138,6 +140,9 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 				m.loading = true
 				m.selected = make(map[int64]bool)
 				return m, tea.Batch(m.loadDir(prev), m.spinner.Tick)
+			}
+			if m.fromTransfers {
+				m.returningToTransfers = true
 			}
 		case key.Matches(msg, keys.Space):
 			if len(m.files) > 0 {

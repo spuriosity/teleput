@@ -30,10 +30,12 @@ type transfersModel struct {
 	spinner   spinner.Model
 
 	// Flags for root model transitions
-	cancelling  bool
-	retrying    bool
-	addingMagnet bool
-	cleaning    bool
+	cancelling    bool
+	retrying      bool
+	addingMagnet  bool
+	cleaning      bool
+	browsingFiles bool
+	browseFileID  int64
 }
 
 func newTransfersModel(client *putio.Client) transfersModel {
@@ -142,6 +144,11 @@ func (m transfersModel) update(msg tea.Msg) (transfersModel, tea.Cmd) {
 			}
 		case key.Matches(msg, keys.Clean):
 			m.cleaning = true
+		case key.Matches(msg, keys.Enter):
+			if len(m.transfers) > 0 && m.transfers[m.cursor].FileID != 0 {
+				m.browsingFiles = true
+				m.browseFileID = m.transfers[m.cursor].FileID
+			}
 		case key.Matches(msg, keys.AddMagnet):
 			m.addingMagnet = true
 		}
@@ -292,11 +299,58 @@ func (m transfersModel) view() string {
 		if t.PeersConnected > 0 {
 			right += fmt.Sprintf("%d peers", t.PeersConnected)
 		}
-		if t.EstimatedTime > 0 {
-			if right != "" {
-				right += " | "
+		// Timing info based on status
+		switch t.Status {
+		case "DOWNLOADING":
+			if t.CreatedAt != nil {
+				elapsed := int64(time.Since(t.CreatedAt.Time).Seconds())
+				if elapsed > 0 {
+					if right != "" {
+						right += " | "
+					}
+					right += "↓ " + formatDuration(elapsed)
+				}
 			}
-			right += "ETA " + formatDuration(t.EstimatedTime)
+			if t.EstimatedTime > 0 {
+				if right != "" {
+					right += " | "
+				}
+				right += "ETA " + formatDuration(t.EstimatedTime)
+			}
+		case "SEEDING":
+			if t.SecondsSeeding > 0 {
+				if right != "" {
+					right += " | "
+				}
+				right += "seeding " + formatDuration(int64(t.SecondsSeeding))
+			}
+		case "COMPLETED":
+			if t.CreatedAt != nil && t.FinishedAt != nil {
+				dur := int64(t.FinishedAt.Time.Sub(t.CreatedAt.Time).Seconds())
+				if dur > 0 {
+					if right != "" {
+						right += " | "
+					}
+					right += "took " + formatDuration(dur)
+				}
+			}
+		case "IN_QUEUE", "WAITING":
+			if t.CreatedAt != nil {
+				waiting := int64(time.Since(t.CreatedAt.Time).Seconds())
+				if waiting > 0 {
+					if right != "" {
+						right += " | "
+					}
+					right += "waiting " + formatDuration(waiting)
+				}
+			}
+		default:
+			if t.EstimatedTime > 0 {
+				if right != "" {
+					right += " | "
+				}
+				right += "ETA " + formatDuration(t.EstimatedTime)
+			}
 		}
 		if t.ErrorMessage != "" {
 			if right != "" {
@@ -315,7 +369,7 @@ func (m transfersModel) view() string {
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " Tab files | Space select | m magnet | x cancel | R retry | C clean | ? help"
+	hints := " Tab files | → browse | Space select | m magnet | x cancel | R retry | C clean | ? help"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

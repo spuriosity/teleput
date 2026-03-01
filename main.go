@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	putio "github.com/putdotio/go-putio"
@@ -60,9 +60,9 @@ func main() {
 
 	token := resolveToken(*tokenFlag)
 
-	// If a positional arg is given, treat it as a torrent file to upload
+	// If positional args are given, upload them to put.io
 	if args := flag.Args(); len(args) > 0 {
-		uploadTorrent(token, args[0], *interactive)
+		uploadFiles(token, args, *interactive)
 		return
 	}
 
@@ -74,109 +74,47 @@ func main() {
 	}
 }
 
-func uploadTorrent(token, path string, interactive bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
-		os.Exit(1)
-	}
-	defer f.Close()
-
+func uploadFiles(token string, paths []string, interactive bool) {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	httpClient := oauth2.NewClient(context.Background(), ts)
 	client := putio.NewClient(httpClient)
 
-	fmt.Printf("Uploading %s...\n", path)
-	upload, err := client.Files.Upload(context.Background(), f, f.Name(), -1)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Upload failed: %v\n", err)
-		os.Exit(1)
+	var transferIDs []int64
+
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening %s: %v\n", path, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Uploading %s...", path)
+		upload, err := client.Files.Upload(context.Background(), f, f.Name(), -1)
+		f.Close()
+		if err != nil {
+			if strings.Contains(err.Error(), "TRANSFER_ALREADY_ADDED") {
+				fmt.Println(" already exists, skipping")
+				continue
+			}
+			fmt.Fprintf(os.Stderr, " failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if upload.Transfer != nil {
+			fmt.Printf(" transfer created: %s\n", upload.Transfer.Name)
+			transferIDs = append(transferIDs, upload.Transfer.ID)
+		} else {
+			fmt.Println(" done")
+		}
 	}
 
-	if upload.Transfer == nil {
-		fmt.Println("File uploaded (not a torrent — no transfer created)")
-		return
-	}
-
-	fmt.Printf("Transfer created: %s\n", upload.Transfer.Name)
-
-	if interactive {
+	if interactive && len(transferIDs) > 0 {
 		m := ui.NewTransfersModel(token)
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		return
-	}
-
-	// Headless: poll and show progress
-	transferID := upload.Transfer.ID
-	for {
-		t, err := client.Transfers.Get(context.Background(), transferID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\nError polling transfer: %v\n", err)
-			os.Exit(1)
-		}
-
-		speed := ""
-		if t.DownloadSpeed > 0 {
-			speed = cliHumanSize(int64(t.DownloadSpeed)) + "/s"
-		}
-		eta := ""
-		if t.EstimatedTime > 0 {
-			eta = "ETA " + cliFormatDuration(t.EstimatedTime)
-		}
-
-		fmt.Printf("\r\033[K  %s  %d%%  %s  %s  %s",
-			t.Name, t.PercentDone, speed, eta, t.Status)
-
-		if t.Status == "COMPLETED" || t.Status == "SEEDING" {
-			fmt.Printf("\n\nDone! File available in your put.io account.\n")
-			return
-		}
-		if t.Status == "ERROR" {
-			fmt.Printf("\n\nTransfer failed: %s\n", t.ErrorMessage)
-			os.Exit(1)
-		}
-
-		time.Sleep(3 * time.Second)
 	}
 }
 
-func cliHumanSize(bytes int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-		TB = GB * 1024
-	)
-	switch {
-	case bytes >= TB:
-		return fmt.Sprintf("%.1f TB", float64(bytes)/float64(TB))
-	case bytes >= GB:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(GB))
-	case bytes >= MB:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(MB))
-	case bytes >= KB:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
-}
-
-func cliFormatDuration(seconds int64) string {
-	if seconds <= 0 {
-		return ""
-	}
-	h := seconds / 3600
-	m := (seconds % 3600) / 60
-	s := seconds % 60
-	if h > 0 {
-		return fmt.Sprintf("%dh%02dm", h, m)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm%02ds", m, s)
-	}
-	return fmt.Sprintf("%ds", s)
-}

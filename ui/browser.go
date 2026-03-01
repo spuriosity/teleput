@@ -29,6 +29,7 @@ type browserModel struct {
 	fromTransfers        bool
 	returningToTransfers bool
 	downloadDir          string
+	diskInfo             string
 	width                int
 	height               int
 	spinner              spinner.Model
@@ -331,14 +332,15 @@ func (m browserModel) view() string {
 }
 
 func (m browserModel) titleBar() string {
-	brand := lipgloss.NewStyle().Bold(true).Render("teleput")
+	bg := catMauve
+	brand := lipgloss.NewStyle().Bold(true).Background(bg).Render("teleput")
 
 	crumbs := m.breadcrumbs()
 	var trail string
 	if len(crumbs) > 1 {
-		dimCrumb := lipgloss.NewStyle().Foreground(catCrust)
-		brightCrumb := lipgloss.NewStyle().Foreground(catBase).Bold(true)
-		sep := lipgloss.NewStyle().Foreground(catCrust).Render(" / ")
+		dimCrumb := lipgloss.NewStyle().Foreground(catCrust).Background(bg)
+		brightCrumb := lipgloss.NewStyle().Foreground(catBase).Background(bg).Bold(true)
+		sep := dimCrumb.Render(" / ")
 
 		parts := make([]string, len(crumbs))
 		for i, c := range crumbs {
@@ -348,11 +350,21 @@ func (m browserModel) titleBar() string {
 				parts[i] = dimCrumb.Render(c)
 			}
 		}
-		trail = " │ " + strings.Join(parts, sep)
+		trail = lipgloss.NewStyle().Background(bg).Render(" │ ") + strings.Join(parts, sep)
 	}
 
-	content := brand + trail
-	return titleBarStyle.Width(m.width).Render(content)
+	left := brand + trail
+	if m.diskInfo != "" {
+		right := lipgloss.NewStyle().Foreground(catBase).Background(bg).Render(m.diskInfo)
+		padding := 2 // titleBarStyle has Padding(0, 1)
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - padding
+		if gap < 1 {
+			gap = 1
+		}
+		filler := lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", gap))
+		return titleBarStyle.Width(m.width).Render(left + filler + right)
+	}
+	return titleBarStyle.Width(m.width).Render(left)
 }
 
 func (m browserModel) breadcrumbs() []string {

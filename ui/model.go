@@ -44,6 +44,8 @@ type Model struct {
 	transfers      transfersModel
 	magnet         magnetModel
 	transferCancel transferCancelModel
+	diskUsed       int64
+	diskTotal      int64
 	err            error
 	quitting       bool
 	startView      view
@@ -80,11 +82,18 @@ func NewTransfersModel(token string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	fetchAccount := func() tea.Msg {
+		info, err := m.client.Account.Info(context.Background())
+		if err != nil {
+			return nil
+		}
+		return accountInfoMsg{diskUsed: info.Disk.Used, diskTotal: info.Disk.Size}
+	}
 	if m.startView == viewTransfers {
 		m.transfers.loading = true
-		return tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+		return tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick, fetchAccount)
 	}
-	return tea.Batch(m.browser.loadDir(0), m.browser.spinner.Tick)
+	return tea.Batch(m.browser.loadDir(0), m.browser.spinner.Tick, fetchAccount)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -251,6 +260,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.browser.loading = true
 		m.view = viewBrowser
 		return m, tea.Batch(m.browser.loadDir(msg.parentID), m.browser.spinner.Tick)
+
+	case accountInfoMsg:
+		m.diskUsed = msg.diskUsed
+		m.diskTotal = msg.diskTotal
+		return m, nil
 
 	case transferRetryCompleteMsg:
 		m.transfers.loading = true
@@ -431,6 +445,11 @@ func (m Model) View() string {
 		return ""
 	}
 
+	if m.diskTotal > 0 {
+		m.browser.diskInfo = fmt.Sprintf("%s / %s", humanSize(m.diskUsed), humanSize(m.diskTotal))
+		m.transfers.diskInfo = m.browser.diskInfo
+	}
+
 	if m.err != nil {
 		return m.errorView()
 	}
@@ -534,6 +553,11 @@ func (m *Model) dismissError() tea.Cmd {
 }
 
 // Messages
+type accountInfoMsg struct {
+	diskUsed  int64
+	diskTotal int64
+}
+
 type errMsg struct{ err error }
 
 func (e errMsg) Error() string { return e.err.Error() }

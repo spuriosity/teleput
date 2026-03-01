@@ -25,6 +25,7 @@ type transfersModel struct {
 	cursor    int
 	selected  map[int64]bool
 	loading   bool
+	diskInfo  string
 	width     int
 	height    int
 	spinner   spinner.Model
@@ -164,10 +165,22 @@ func (m transfersModel) view() string {
 	var b strings.Builder
 
 	// Title bar
-	brand := lipgloss.NewStyle().Bold(true).Render("teleput")
-	label := lipgloss.NewStyle().Foreground(catBase).Bold(true).Render("Transfers")
-	content := brand + " | " + label
-	b.WriteString(titleBarStyle.Width(m.width).Render(content))
+	bg := catMauve
+	brand := lipgloss.NewStyle().Bold(true).Background(bg).Render("teleput")
+	label := lipgloss.NewStyle().Foreground(catBase).Background(bg).Bold(true).Render("Transfers")
+	left := brand + lipgloss.NewStyle().Background(bg).Render(" │ ") + label
+	if m.diskInfo != "" {
+		right := lipgloss.NewStyle().Foreground(catBase).Background(bg).Render(m.diskInfo)
+		padding := 2 // titleBarStyle has Padding(0, 1)
+		gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - padding
+		if gap < 1 {
+			gap = 1
+		}
+		filler := lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", gap))
+		b.WriteString(titleBarStyle.Width(m.width).Render(left + filler + right))
+	} else {
+		b.WriteString(titleBarStyle.Width(m.width).Render(left))
+	}
 	b.WriteString("\n")
 
 	if m.loading {
@@ -289,7 +302,7 @@ func (m transfersModel) view() string {
 
 	// Status bar
 	selCount := len(m.selected)
-	left := fmt.Sprintf(" %d transfers", len(m.transfers))
+	left = fmt.Sprintf(" %d transfers", len(m.transfers))
 	if selCount > 0 {
 		left += fmt.Sprintf(" | %d selected", selCount)
 	}

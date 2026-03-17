@@ -26,6 +26,7 @@ type browserModel struct {
 	downloading          bool
 	deleting             bool
 	renaming             bool
+	organizing           bool
 	fromTransfers        bool
 	returningToTransfers bool
 	downloadDir          string
@@ -176,6 +177,8 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 			if len(m.files) > 0 {
 				m.renaming = true
 			}
+		case key.Matches(msg, keys.Organize):
+			m.organizing = true
 		case key.Matches(msg, keys.SetDir):
 			// TODO: text input for download dir
 		}
@@ -325,7 +328,7 @@ func (m browserModel) view() string {
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ x delete │ r rename │ Tab transfers │ ? help"
+	hints := " ↑↓ navigate │ → open │ ← back │ Space select │ d download │ x delete │ r rename │ o organize │ Tab transfers │ ? help"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

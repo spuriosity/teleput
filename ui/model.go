@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	putio "github.com/putdotio/go-putio"
 	"golang.org/x/oauth2"
+
+	"github.com/jack/teleput/config"
 )
 
 type view int
@@ -28,6 +30,7 @@ const (
 	viewAddMagnet
 	viewConfirmCancelTransfer
 	viewCancelTransfer
+	viewOrganize
 )
 
 type Model struct {
@@ -44,6 +47,8 @@ type Model struct {
 	transfers      transfersModel
 	magnet         magnetModel
 	transferCancel transferCancelModel
+	organize       organizeModel
+	cfg            *config.Config
 	diskUsed       int64
 	diskTotal      int64
 	err            error
@@ -51,7 +56,7 @@ type Model struct {
 	startView      view
 }
 
-func NewModel(token string) Model {
+func NewModel(token string, cfg *config.Config) Model {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	httpClient := oauth2.NewClient(context.Background(), ts)
 	client := putio.NewClient(httpClient)
@@ -59,6 +64,7 @@ func NewModel(token string) Model {
 	return Model{
 		client:    client,
 		token:     token,
+		cfg:       cfg,
 		view:      viewBrowser,
 		startView: viewBrowser,
 		browser:   newBrowserModel(client),
@@ -66,7 +72,7 @@ func NewModel(token string) Model {
 	}
 }
 
-func NewTransfersModel(token string) Model {
+func NewTransfersModel(token string, cfg *config.Config) Model {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	httpClient := oauth2.NewClient(context.Background(), ts)
 	client := putio.NewClient(httpClient)
@@ -74,6 +80,7 @@ func NewTransfersModel(token string) Model {
 	return Model{
 		client:    client,
 		token:     token,
+		cfg:       cfg,
 		view:      viewTransfers,
 		startView: viewTransfers,
 		browser:   newBrowserModel(client),
@@ -117,20 +124,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.magnet.height = msg.Height
 		m.transferCancel.width = msg.Width
 		m.transferCancel.height = msg.Height
+		m.organize.width = msg.Width
+		m.organize.height = msg.Height
 		return m, nil
 
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, keys.Quit):
 			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename ||
-				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer {
+				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer ||
+				m.view == viewOrganize {
 				break
 			}
 			m.quitting = true
 			return m, tea.Quit
 		case key.Matches(msg, keys.Help):
 			if m.view == viewConfirmDelete || m.view == viewDelete || m.view == viewRename ||
-				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer {
+				m.view == viewAddMagnet || m.view == viewConfirmCancelTransfer || m.view == viewCancelTransfer ||
+				m.view == viewOrganize {
 				break
 			}
 			if m.view == viewHelp {
@@ -194,6 +205,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.transfers.selected = make(map[int64]bool)
 				m.transfers.loading = true
 				return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
+			}
+			if m.view == viewOrganize && (m.organize.phase == phasePlanReady || m.organize.phase == phaseDone) {
+				if m.organize.phase == phaseDone && m.organize.err == nil {
+					// Reload current directory after successful organize
+					m.browser.loading = true
+					m.view = viewBrowser
+					return m, tea.Batch(m.browser.loadDir(m.browser.parentID), m.browser.spinner.Tick)
+				}
+				m.view = viewBrowser
+				return m, nil
 			}
 			if m.err != nil {
 				return m, m.dismissError()
@@ -274,6 +295,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.transfers.loading = true
 		return m, tea.Batch(m.transfers.loadTransfers(), m.transfers.spinner.Tick)
 
+	case organizeClassifyDoneMsg:
+		var cmd tea.Cmd
+		m.organize, cmd = m.organize.update(msg)
+		return m, cmd
+
+	case organizeProgressMsg:
+		var cmd tea.Cmd
+		m.organize, cmd = m.organize.update(msg)
+		return m, cmd
+
+	case organizeCompleteMsg:
+		var cmd tea.Cmd
+		m.organize, cmd = m.organize.update(msg)
+		return m, cmd
+
 	case transfersLoadedMsg:
 		var cmd tea.Cmd
 		m.transfers, cmd = m.transfers.update(msg)
@@ -308,6 +344,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.transferCancel, cmd = m.transferCancel.update(msg)
 			return m, cmd
 		}
+		if m.view == viewOrganize {
+			m.organize.err = msg.err
+			m.organize.phase = phaseDone
+			return m, nil
+		}
 		m.err = msg.err
 		return m, nil
 
@@ -328,6 +369,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.magnet, cmd = m.magnet.update(msg)
 		case viewCancelTransfer:
 			m.transferCancel, cmd = m.transferCancel.update(msg)
+		case viewOrganize:
+			m.organize, cmd = m.organize.update(msg)
 		}
 		return m, cmd
 
@@ -377,6 +420,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = viewRename
 			return m, m.rename.input.Focus()
 		}
+		if m.browser.organizing {
+			m.browser.organizing = false
+			if m.cfg == nil || !m.cfg.Organizer.Enabled {
+				m.err = fmt.Errorf("organizer is disabled — enable it in ~/.config/teleput/config.json")
+				return m, nil
+			}
+			folderName := m.browser.currentDirName()
+			m.organize = newOrganizeModel(m.client, m.cfg.Organizer, m.browser.parentID, folderName)
+			m.organize.width = m.width
+			m.organize.height = m.height
+			m.view = viewOrganize
+			return m, tea.Batch(m.organize.startClassify(), m.organize.spinner.Tick)
+		}
 	case viewDownload:
 		m.download, cmd = m.download.update(msg)
 	case viewConfirmDelete:
@@ -425,12 +481,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = viewBrowser
 			return m, tea.Batch(m.browser.loadDir(fileID), m.browser.spinner.Tick)
 		}
+		if m.transfers.organizing {
+			m.transfers.organizing = false
+			if m.cfg == nil || !m.cfg.Organizer.Enabled {
+				m.err = fmt.Errorf("organizer is disabled — enable it in ~/.config/teleput/config.json")
+				return m, nil
+			}
+			t := m.transfers.transfers[m.transfers.cursor]
+			m.organize = newOrganizeModel(m.client, m.cfg.Organizer, m.transfers.organizeFileID, t.Name)
+			m.organize.width = m.width
+			m.organize.height = m.height
+			m.view = viewOrganize
+			return m, tea.Batch(m.organize.startClassify(), m.organize.spinner.Tick)
+		}
 	case viewAddMagnet:
 		m.magnet, cmd = m.magnet.update(msg)
 	case viewConfirmCancelTransfer:
 		m.confirm, cmd = m.confirm.update(msg)
 	case viewCancelTransfer:
 		m.transferCancel, cmd = m.transferCancel.update(msg)
+	case viewOrganize:
+		m.organize, cmd = m.organize.update(msg)
 	}
 
 	return m, cmd
@@ -471,6 +542,8 @@ func (m Model) View() string {
 		return m.magnet.view()
 	case viewCancelTransfer:
 		return m.transferCancel.view()
+	case viewOrganize:
+		return m.organize.view()
 	default:
 		return m.browser.view()
 	}
@@ -515,6 +588,7 @@ func (m Model) helpView() string {
 	content.WriteString(row("q / Ctrl+c", "Quit") + "\n")
 	content.WriteString(row("Esc", "Close overlay / go back") + "\n")
 
+	content.WriteString(row("o", "Organize files (AI)") + "\n")
 	content.WriteString("\n" + sectionStyle.Render("Transfers") + "\n")
 	content.WriteString(row("→ / Enter / l", "Browse transfer files") + "\n")
 	content.WriteString(row("m", "Add magnet / URL") + "\n")
@@ -613,6 +687,7 @@ type keyMap struct {
 	AddMagnet             key.Binding
 	Retry                 key.Binding
 	Clean                 key.Binding
+	Organize              key.Binding
 }
 
 var keys = keyMap{
@@ -635,4 +710,5 @@ var keys = keyMap{
 	AddMagnet: key.NewBinding(key.WithKeys("m")),
 	Retry:     key.NewBinding(key.WithKeys("R")),
 	Clean:     key.NewBinding(key.WithKeys("C")),
+	Organize:  key.NewBinding(key.WithKeys("o")),
 }

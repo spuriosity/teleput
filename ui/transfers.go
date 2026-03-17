@@ -31,12 +31,14 @@ type transfersModel struct {
 	spinner   spinner.Model
 
 	// Flags for root model transitions
-	cancelling    bool
-	retrying      bool
-	addingMagnet  bool
-	cleaning      bool
-	browsingFiles bool
-	browseFileID  int64
+	cancelling      bool
+	retrying        bool
+	addingMagnet    bool
+	cleaning        bool
+	browsingFiles   bool
+	browseFileID    int64
+	organizing      bool
+	organizeFileID  int64
 }
 
 func newTransfersModel(client *putio.Client) transfersModel {
@@ -152,6 +154,14 @@ func (m transfersModel) update(msg tea.Msg) (transfersModel, tea.Cmd) {
 			}
 		case key.Matches(msg, keys.AddMagnet):
 			m.addingMagnet = true
+		case key.Matches(msg, keys.Organize):
+			if len(m.transfers) > 0 {
+				t := m.transfers[m.cursor]
+				if t.FileID != 0 && (t.Status == "COMPLETED" || t.Status == "SEEDING") {
+					m.organizing = true
+					m.organizeFileID = t.FileID
+				}
+			}
 		}
 	}
 	return m, nil
@@ -382,7 +392,7 @@ func (m transfersModel) view() string {
 	b.WriteString("\n")
 
 	// Hint bar
-	hints := " Tab files | → browse | Space select | m magnet | x cancel | R retry | C clean | ? help"
+	hints := " Tab files | → browse | Space select | m magnet | o organize | x cancel | R retry | C clean | ? help"
 	b.WriteString(hintBarStyle.Width(m.width).Render(hints))
 
 	return b.String()

@@ -9,7 +9,22 @@ import (
 const appName = "teleput"
 
 type Config struct {
-	OAuthToken string `json:"oauth_token"`
+	OAuthToken string          `json:"oauth_token"`
+	Organizer  OrganizerConfig `json:"organizer,omitempty"`
+}
+
+type OrganizerConfig struct {
+	Enabled    bool         `json:"enabled"`
+	Paths      LibraryPaths `json:"paths"`
+	DeleteJunk bool         `json:"delete_junk"`
+}
+
+type LibraryPaths struct {
+	Movies     string `json:"movies,omitempty"`
+	TV         string `json:"tv,omitempty"`
+	Music      string `json:"music,omitempty"`
+	Audiobooks string `json:"audiobooks,omitempty"`
+	Books      string `json:"books,omitempty"`
 }
 
 func Dir() (string, error) {

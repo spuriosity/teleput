@@ -60,13 +60,19 @@ func main() {
 
 	token := resolveToken(*tokenFlag)
 
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
 	// If positional args are given, upload them to put.io
 	if args := flag.Args(); len(args) > 0 {
-		uploadFiles(token, args, *interactive)
+		uploadFiles(token, cfg, args, *interactive)
 		return
 	}
 
-	m := ui.NewModel(token)
+	m := ui.NewModel(token, cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -74,7 +80,7 @@ func main() {
 	}
 }
 
-func uploadFiles(token string, paths []string, interactive bool) {
+func uploadFiles(token string, cfg *config.Config, paths []string, interactive bool) {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	httpClient := oauth2.NewClient(context.Background(), ts)
 	client := putio.NewClient(httpClient)
@@ -109,7 +115,7 @@ func uploadFiles(token string, paths []string, interactive bool) {
 	}
 
 	if interactive && len(transferIDs) > 0 {
-		m := ui.NewTransfersModel(token)
+		m := ui.NewTransfersModel(token, cfg)
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)

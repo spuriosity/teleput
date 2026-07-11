@@ -13,7 +13,8 @@ import (
 
 func sizedModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(nil, &config.Config{})
+	m := NewModel(nil, &config.Config{}, nil, nil)
+	m.saveCfg = func(*config.Config) error { return nil }
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return next.(Model)
 }

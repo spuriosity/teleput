@@ -12,6 +12,8 @@ import (
 
 	"github.com/jack/teleput/auth"
 	"github.com/jack/teleput/config"
+	"github.com/jack/teleput/download"
+	"github.com/jack/teleput/naming"
 	"github.com/jack/teleput/ui"
 )
 
@@ -64,7 +66,18 @@ func main() {
 	}
 
 	client := newPutioClient(token)
-	m := ui.NewModel(client, cfg)
+
+	resolver := func(ctx context.Context, fileID int64) (string, error) {
+		return client.Files.URL(ctx, fileID, true)
+	}
+	dl := download.New(resolver, cfg.EffectiveDownloadDir())
+
+	var namer *naming.Client
+	if gt := cfg.EffectiveGeminiToken(); gt != "" {
+		namer = naming.NewClient(gt)
+	}
+
+	m := ui.NewModel(client, cfg, dl, namer)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

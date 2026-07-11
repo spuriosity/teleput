@@ -13,14 +13,23 @@ import (
 )
 
 type browserModel struct {
-	client   *putio.Client
-	files    []putio.File
-	cursor   int
-	parentID int64
-	parents  []int64
-	loading  bool
-	width    int
-	height   int
+	client      *putio.Client
+	files       []putio.File
+	cursor      int
+	parentID    int64
+	parents     []int64
+	loading     bool
+	width       int
+	height      int
+	glyphs      map[int64]string
+	statusExtra string
+}
+
+func (m browserModel) selected() (putio.File, bool) {
+	if len(m.files) == 0 || m.cursor >= len(m.files) {
+		return putio.File{}, false
+	}
+	return m.files[m.cursor], true
 }
 
 type filesLoadedMsg struct {
@@ -136,12 +145,16 @@ func (m browserModel) view() string {
 		}
 
 		name := f.Name
+		glyph := " "
+		if g, ok := m.glyphs[f.ID]; ok {
+			glyph = g
+		}
 		var line string
 		if f.IsDir() {
-			line = fmt.Sprintf("%s%s %s", cursor, "📁", dirSt.Render(name))
+			line = fmt.Sprintf("%s%s %s %s", cursor, "📁", glyph, dirSt.Render(name))
 		} else {
 			size := humanSize(f.Size)
-			line = fmt.Sprintf("%s%s %s  %s", cursor, "📄", normalSt.Render(name), sizeSt.Render(size))
+			line = fmt.Sprintf("%s%s %s %s  %s", cursor, "📄", glyph, normalSt.Render(name), sizeSt.Render(size))
 		}
 
 		b.WriteString(line + "\n")
@@ -149,10 +162,13 @@ func (m browserModel) view() string {
 
 	// Status bar
 	status := fmt.Sprintf(" %d/%d items", m.cursor+1, len(m.files))
+	if m.statusExtra != "" {
+		status += " · " + m.statusExtra
+	}
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move · enter open · h back · q quit"))
+	b.WriteString(helpStyle.Render("j/k move · enter open · h back · d download · D delete · x cancel · s settings · q quit"))
 
 	return b.String()
 }

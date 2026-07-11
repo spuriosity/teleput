@@ -9,7 +9,27 @@ import (
 const appName = "teleput"
 
 type Config struct {
-	OAuthToken string `json:"oauth_token"`
+	OAuthToken  string `json:"oauth_token"`
+	GeminiToken string `json:"gemini_token,omitempty"`
+	DownloadDir string `json:"download_dir,omitempty"`
+}
+
+func (c *Config) EffectiveDownloadDir() string {
+	if c.DownloadDir != "" {
+		return c.DownloadDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "Downloads"
+	}
+	return filepath.Join(home, "Downloads")
+}
+
+func (c *Config) EffectiveGeminiToken() string {
+	if c.GeminiToken != "" {
+		return c.GeminiToken
+	}
+	return os.Getenv("GEMINI_TOKEN")
 }
 
 func Dir() (string, error) {

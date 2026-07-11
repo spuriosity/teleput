@@ -254,7 +254,7 @@ func (m Model) startDownload() (tea.Model, tea.Cmd) {
 		for i, rf := range files {
 			names[i] = rf.RelPath
 		}
-		nctx, ncancel := context.WithTimeout(ctx, 5*time.Second)
+		nctx, ncancel := context.WithTimeout(ctx, 20*time.Second)
 		defer ncancel()
 		parsed, err := namer.Normalise(nctx, names)
 		if err != nil {

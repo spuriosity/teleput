@@ -49,7 +49,13 @@ type geminiPart struct {
 }
 
 type generationConfig struct {
-	ResponseMimeType string `json:"responseMimeType"`
+	ResponseMimeType string          `json:"responseMimeType"`
+	ThinkingConfig   *thinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// thinking adds seconds of latency for zero gain on name classification
+type thinkingConfig struct {
+	ThinkingBudget int `json:"thinkingBudget"`
 }
 
 type geminiResponse struct {
@@ -65,7 +71,7 @@ type geminiResponse struct {
 func (c *Client) Normalise(ctx context.Context, names []string) ([]Parsed, error) {
 	body, err := json.Marshal(geminiRequest{
 		Contents:         []geminiContent{{Parts: []geminiPart{{Text: promptHeader + strings.Join(names, "\n")}}}},
-		GenerationConfig: generationConfig{ResponseMimeType: "application/json"},
+		GenerationConfig: generationConfig{ResponseMimeType: "application/json", ThinkingConfig: &thinkingConfig{ThinkingBudget: 0}},
 	})
 	if err != nil {
 		return nil, err

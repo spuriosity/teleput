@@ -126,7 +126,10 @@ func (m browserModel) view() string {
 	normalSt := lipgloss.NewStyle().Foreground(catText)
 	sizeSt := lipgloss.NewStyle().Foreground(catOverlay1)
 
-	for i, f := range m.files {
+	listRows := m.height - 4 // title, blank, status bar, help footer
+	start, end := visibleRange(m.cursor, len(m.files), listRows)
+	for i := start; i < end; i++ {
+		f := m.files[i]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = lipgloss.NewStyle().Foreground(catPeach).Render("> ")
@@ -145,11 +148,31 @@ func (m browserModel) view() string {
 	}
 
 	// Status bar
-	status := fmt.Sprintf(" %d items", len(m.files))
+	status := fmt.Sprintf(" %d/%d items", m.cursor+1, len(m.files))
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("j/k move · enter open · h back · q quit"))
 
 	return b.String()
+}
+
+// visibleRange returns the [start,end) window of rows to render so the
+// cursor stays on screen; once past the first page the cursor rides the
+// bottom edge.
+func visibleRange(cursor, total, rows int) (int, int) {
+	if total <= 0 || rows <= 0 {
+		return 0, 0
+	}
+	start := cursor - rows + 1
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > total {
+		end = total
+	}
+	return start, end
 }
 
 func humanSize(bytes int64) string {

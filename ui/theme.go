@@ -34,4 +34,8 @@ var (
 			Foreground(catCrust).
 			Background(catRed).
 			Padding(0, 1)
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(catOverlay1).
+			Padding(0, 1)
 )

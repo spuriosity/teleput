@@ -48,6 +48,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		return m, nil
+
+	case filesLoadedMsg:
+		m.err = nil
 	}
 
 	var cmd tea.Cmd
@@ -62,7 +65,12 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
-	return m.browser.view()
+	view := m.browser.view()
+	if m.err != nil {
+		banner := errorBannerStyle.Width(m.width).Render("error: " + m.err.Error())
+		view += "\n" + banner
+	}
+	return view
 }
 
 type errMsg struct{ err error }

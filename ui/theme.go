@@ -5,6 +5,8 @@ import "github.com/charmbracelet/lipgloss"
 // Catppuccin Mocha palette
 var (
 	catMauve    = lipgloss.Color("#cba6f7")
+	catRed      = lipgloss.Color("#f38ba8")
+	catGreen    = lipgloss.Color("#a6e3a1")
 	catPeach    = lipgloss.Color("#fab387")
 	catSapphire = lipgloss.Color("#74c7ec")
 	catText     = lipgloss.Color("#cdd6f4")
@@ -26,5 +28,10 @@ var (
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(catOverlay1).
 			Background(catSurface0).
+			Padding(0, 1)
+
+	errorBannerStyle = lipgloss.NewStyle().
+			Foreground(catCrust).
+			Background(catRed).
 			Padding(0, 1)
 )

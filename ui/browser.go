@@ -13,14 +13,23 @@ import (
 )
 
 type browserModel struct {
-	client   *putio.Client
-	files    []putio.File
-	cursor   int
-	parentID int64
-	parents  []int64
-	loading  bool
-	width    int
-	height   int
+	client      *putio.Client
+	files       []putio.File
+	cursor      int
+	parentID    int64
+	parents     []int64
+	loading     bool
+	width       int
+	height      int
+	glyphs      map[int64]string
+	statusExtra string
+}
+
+func (m browserModel) selected() (putio.File, bool) {
+	if len(m.files) == 0 || m.cursor >= len(m.files) {
+		return putio.File{}, false
+	}
+	return m.files[m.cursor], true
 }
 
 type filesLoadedMsg struct {
@@ -126,30 +135,60 @@ func (m browserModel) view() string {
 	normalSt := lipgloss.NewStyle().Foreground(catText)
 	sizeSt := lipgloss.NewStyle().Foreground(catOverlay1)
 
-	for i, f := range m.files {
+	listRows := m.height - 4 // title, blank, status bar, help footer
+	start, end := visibleRange(m.cursor, len(m.files), listRows)
+	for i := start; i < end; i++ {
+		f := m.files[i]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = lipgloss.NewStyle().Foreground(catPeach).Render("> ")
 		}
 
 		name := f.Name
+		glyph := " "
+		if g, ok := m.glyphs[f.ID]; ok {
+			glyph = g
+		}
 		var line string
 		if f.IsDir() {
-			line = fmt.Sprintf("%s%s %s", cursor, "📁", dirSt.Render(name))
+			line = fmt.Sprintf("%s%s %s %s", cursor, "📁", glyph, dirSt.Render(name))
 		} else {
 			size := humanSize(f.Size)
-			line = fmt.Sprintf("%s%s %s  %s", cursor, "📄", normalSt.Render(name), sizeSt.Render(size))
+			line = fmt.Sprintf("%s%s %s %s  %s", cursor, "📄", glyph, normalSt.Render(name), sizeSt.Render(size))
 		}
 
 		b.WriteString(line + "\n")
 	}
 
 	// Status bar
-	status := fmt.Sprintf(" %d items", len(m.files))
+	status := fmt.Sprintf(" %d/%d items", m.cursor+1, len(m.files))
+	if m.statusExtra != "" {
+		status += " · " + m.statusExtra
+	}
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("j/k move · enter open · h back · d download · D delete · x cancel · s settings · q quit"))
 
 	return b.String()
+}
+
+// visibleRange returns the [start,end) window of rows to render so the
+// cursor stays on screen; once past the first page the cursor rides the
+// bottom edge.
+func visibleRange(cursor, total, rows int) (int, int) {
+	if total <= 0 || rows <= 0 {
+		return 0, 0
+	}
+	start := cursor - rows + 1
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > total {
+		end = total
+	}
+	return start, end
 }
 
 func humanSize(bytes int64) string {

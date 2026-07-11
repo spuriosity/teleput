@@ -1,16 +1,16 @@
 package ui
 
 import (
-	"context"
-
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	putio "github.com/putdotio/go-putio"
-	"golang.org/x/oauth2"
+
+	"github.com/jack/teleput/config"
 )
 
 type Model struct {
 	client   *putio.Client
+	cfg      *config.Config
 	width    int
 	height   int
 	browser  browserModel
@@ -18,13 +18,10 @@ type Model struct {
 	quitting bool
 }
 
-func NewModel(token string) Model {
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
-	httpClient := oauth2.NewClient(context.Background(), ts)
-	client := putio.NewClient(httpClient)
-
+func NewModel(client *putio.Client, cfg *config.Config) Model {
 	return Model{
 		client:  client,
+		cfg:     cfg,
 		browser: newBrowserModel(client),
 	}
 }

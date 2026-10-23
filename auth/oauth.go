@@ -30,9 +30,11 @@ func Authenticate(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("getting OOB code: %w", err)
 	}
 
-	approveURL := fmt.Sprintf("https://app.put.io/authenticate?client_id=%s&response_type=oob&oob_code=%s", ClientID, code)
+	// The code must be linked via put.io/link; the /authenticate page only
+	// displays a token and never attaches it to the OOB code we poll.
+	approveURL := fmt.Sprintf("https://app.put.io/link?code=%s", code)
 	fmt.Printf("Opening browser for authentication...\n")
-	fmt.Printf("If the browser doesn't open, visit:\n  %s\n\n", approveURL)
+	fmt.Printf("If the browser doesn't open, visit:\n  %s\n(or enter code %s at put.io/link)\n\n", approveURL, code)
 	_ = browser.OpenURL(approveURL)
 
 	fmt.Println("Waiting for approval...")

@@ -60,6 +60,34 @@ func TestShouldDownloadFileToRelPath(t *testing.T) {
 	}
 }
 
+func TestShouldDownloadToNewDirAfterSetDestDir(t *testing.T) {
+	data := []byte("teleput!")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "f", time.Time{}, bytes.NewReader(data))
+	}))
+	defer srv.Close()
+
+	oldDest, newDest := t.TempDir(), t.TempDir()
+	m := New(fixedResolver(srv.URL), oldDest)
+
+	m.Enqueue([]Item{{FileID: 1, RelPath: "a.mkv", Size: int64(len(data))}})
+	awaitTerminal(t, m, Completed)
+
+	m.SetDestDir(newDest)
+	m.Enqueue([]Item{{FileID: 2, RelPath: "b.mkv", Size: int64(len(data))}})
+	awaitTerminal(t, m, Completed)
+
+	if _, err := os.Stat(filepath.Join(oldDest, "a.mkv")); err != nil {
+		t.Fatalf("first download missing from old dest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(newDest, "b.mkv")); err != nil {
+		t.Fatalf("second download missing from new dest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldDest, "b.mkv")); !os.IsNotExist(err) {
+		t.Fatal("second download landed in old dest")
+	}
+}
+
 func TestShouldResumeFromPartFile(t *testing.T) {
 	data := bytes.Repeat([]byte("0123456789abcdef"), 4096)
 	var sawRange string

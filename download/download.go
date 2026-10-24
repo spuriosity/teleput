@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,11 +43,11 @@ type URLResolver func(ctx context.Context, fileID int64) (string, error)
 
 type Manager struct {
 	resolve URLResolver
-	destDir string
 	httpc   *http.Client
 	events  chan Event
 
 	mu      sync.Mutex
+	destDir string
 	queue   []Item
 	active  bool
 	cancels map[int64]context.CancelFunc
@@ -63,6 +64,14 @@ func New(resolve URLResolver, destDir string) *Manager {
 }
 
 func (m *Manager) Events() <-chan Event { return m.events }
+
+// SetDestDir applies to downloads that start after the call; in-flight
+// transfers finish in the directory they began in.
+func (m *Manager) SetDestDir(dir string) {
+	m.mu.Lock()
+	m.destDir = dir
+	m.mu.Unlock()
+}
 
 func (m *Manager) Enqueue(items []Item) {
 	m.mu.Lock()
@@ -130,7 +139,10 @@ func (m *Manager) download(ctx context.Context, it Item) error {
 		return fmt.Errorf("resolving url: %w", err)
 	}
 
-	final := filepath.Join(m.destDir, it.RelPath)
+	m.mu.Lock()
+	destDir := m.destDir
+	m.mu.Unlock()
+	final := uniquePath(filepath.Join(destDir, it.RelPath))
 	part := final + ".part"
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return err
@@ -182,6 +194,22 @@ func (m *Manager) download(ctx context.Context, it Item) error {
 		return err
 	}
 	return os.Rename(part, final)
+}
+
+// uniquePath returns p, or "p (N)" before the extension when p already
+// exists — an existing file is never replaced, the new one lands beside it.
+func uniquePath(p string) string {
+	if _, err := os.Stat(p); err != nil {
+		return p
+	}
+	ext := filepath.Ext(p)
+	stem := strings.TrimSuffix(p, ext)
+	for i := 1; ; i++ {
+		cand := fmt.Sprintf("%s (%d)%s", stem, i, ext)
+		if _, err := os.Stat(cand); err != nil {
+			return cand
+		}
+	}
 }
 
 func (m *Manager) copyWithProgress(ctx context.Context, dst io.Writer, src io.Reader, it Item, offset, total int64) error {

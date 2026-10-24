@@ -135,6 +135,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case fieldDownloadDir:
 			m.cfg.DownloadDir = msg.value
+			if m.dl != nil {
+				m.dl.SetDestDir(m.cfg.EffectiveDownloadDir())
+			}
 		}
 		if err := m.saveCfg(m.cfg); err != nil {
 			m.err = err
@@ -233,19 +236,36 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startDownload() (tea.Model, tea.Cmd) {
-	f, ok := m.browser.selected()
-	if !ok {
-		return m, nil
+	roots := m.browser.markedRoots()
+	if len(roots) == 0 {
+		f, ok := m.browser.selected()
+		if !ok {
+			return m, nil
+		}
+		roots = []putio.File{f}
 	}
+	m.browser.marked = make(map[int64]putio.File)
 	l, namer := m.lister, m.namer
 	m.note = "planning download…"
 	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		files, err := collectFiles(ctx, l, f)
-		if err != nil {
-			return errMsg{err}
+		collectCtx, cancelCollect := context.WithTimeout(context.Background(), 60*time.Second)
+		var files []remoteFile
+		seen := make(map[int64]bool)
+		for _, root := range roots {
+			collected, err := collectFiles(collectCtx, l, root)
+			if err != nil {
+				cancelCollect()
+				return errMsg{err}
+			}
+			for _, rf := range collected {
+				if seen[rf.ID] {
+					continue
+				}
+				seen[rf.ID] = true
+				files = append(files, rf)
+			}
 		}
+		cancelCollect()
 
 		if namer == nil {
 			return renamePlanMsg{rows: rawProposals(files), geminiErr: fmt.Errorf("no gemini token configured (press s)")}
@@ -254,9 +274,9 @@ func (m Model) startDownload() (tea.Model, tea.Cmd) {
 		for i, rf := range files {
 			names[i] = rf.RelPath
 		}
-		nctx, ncancel := context.WithTimeout(ctx, 20*time.Second)
-		defer ncancel()
-		parsed, err := namer.Normalise(nctx, names)
+		namingCtx, cancelNaming := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancelNaming()
+		parsed, err := namer.Normalise(namingCtx, names)
 		if err != nil {
 			return renamePlanMsg{rows: rawProposals(files), geminiErr: err}
 		}

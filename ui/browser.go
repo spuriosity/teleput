@@ -22,6 +22,7 @@ type browserModel struct {
 	width       int
 	height      int
 	glyphs      map[int64]string
+	marked      map[int64]putio.File
 	statusExtra string
 }
 
@@ -40,7 +41,20 @@ type filesLoadedMsg struct {
 func newBrowserModel(client *putio.Client) browserModel {
 	return browserModel{
 		client: client,
+		marked: make(map[int64]putio.File),
 	}
+}
+
+// markedRoots returns the marked files sorted by name for a stable plan order.
+func (m browserModel) markedRoots() []putio.File {
+	roots := make([]putio.File, 0, len(m.marked))
+	for _, f := range m.marked {
+		roots = append(roots, f)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		return strings.ToLower(roots[i].Name) < strings.ToLower(roots[j].Name)
+	})
+	return roots
 }
 
 func (m browserModel) loadDir(parentID int64) tea.Cmd {
@@ -96,6 +110,17 @@ func (m browserModel) update(msg tea.Msg) (browserModel, tea.Cmd) {
 				m.loading = true
 				return m, m.loadDir(prev)
 			}
+		case msg.String() == " ":
+			if f, ok := m.selected(); ok {
+				if _, on := m.marked[f.ID]; on {
+					delete(m.marked, f.ID)
+				} else {
+					m.marked[f.ID] = f
+				}
+				if m.cursor < len(m.files)-1 {
+					m.cursor++
+				}
+			}
 		}
 	}
 	return m, nil
@@ -149,26 +174,34 @@ func (m browserModel) view() string {
 		if g, ok := m.glyphs[f.ID]; ok {
 			glyph = g
 		}
-		var line string
-		if f.IsDir() {
-			line = fmt.Sprintf("%s%s %s %s", cursor, "📁", glyph, dirSt.Render(name))
-		} else {
-			size := humanSize(f.Size)
-			line = fmt.Sprintf("%s%s %s %s  %s", cursor, "📄", glyph, normalSt.Render(name), sizeSt.Render(size))
+		mark := " "
+		if _, on := m.marked[f.ID]; on {
+			mark = lipgloss.NewStyle().Foreground(catYellow).Render("•")
 		}
+		icon := "📄"
+		nameSt := normalSt
+		if f.IsDir() {
+			icon = "📁"
+			nameSt = dirSt
+		}
+		size := humanSize(f.Size)
+		line := fmt.Sprintf("%s%s %s %s %s  %s", cursor, mark, icon, glyph, nameSt.Render(name), sizeSt.Render(size))
 
 		b.WriteString(line + "\n")
 	}
 
 	// Status bar
 	status := fmt.Sprintf(" %d/%d items", m.cursor+1, len(m.files))
+	if n := len(m.marked); n > 0 {
+		status += fmt.Sprintf(" · %d marked", n)
+	}
 	if m.statusExtra != "" {
 		status += " · " + m.statusExtra
 	}
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move · enter open · h back · d download · D delete · x cancel · s settings · q quit"))
+	b.WriteString(helpStyle.Render("j/k move · enter open · h back · space mark · d download · D delete · x cancel · s settings · q quit"))
 
 	return b.String()
 }

@@ -34,7 +34,8 @@ saves the token to `~/.config/teleput/config.json`.
 | `j`/`↓`, `k`/`↑` | Move |
 | `l`/`→`/`Enter` | Open folder |
 | `h`/`←`/`Backspace` | Go back |
-| `d` | Download file/folder (opens rename confirmation) |
+| `space` | Mark/unmark for multi-download (marks survive navigation) |
+| `d` | Download marked items, or the item under the cursor (opens rename confirmation) |
 | `x` | Cancel download under cursor |
 | `D` | Delete from put.io (asks y/N) |
 | `s` | Settings (tokens, download dir) |
@@ -42,6 +43,9 @@ saves the token to `~/.config/teleput/config.json`.
 
 In the rename confirmation: `space` keeps a file's original name, `e` edits
 the proposed path, `enter` approves the batch, `esc` cancels.
+
+Downloads never replace existing local files: folders merge, and a file whose
+destination already exists is saved alongside it as `name (1).ext`.
 
 ## Config
 

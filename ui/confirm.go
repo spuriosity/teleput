@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"path"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -19,6 +20,15 @@ type proposal struct {
 type confirmDoneMsg struct{ items []download.Item }
 type confirmCancelMsg struct{}
 
+// renameOp renames one put.io item where it stands.
+type renameOp struct {
+	id      int64
+	relPath string
+	newName string
+}
+
+type confirmRenameMsg struct{ ops []renameOp }
+
 type confirmModel struct {
 	rows    []proposal
 	cursor  int
@@ -26,12 +36,20 @@ type confirmModel struct {
 	input   textinput.Model
 	width   int
 	height  int
+	// inPlace confirms renames on put.io rather than download paths.
+	inPlace bool
 }
 
 func newConfirmModel(rows []proposal, width, height int) confirmModel {
 	ti := textinput.New()
 	ti.CharLimit = 512
 	return confirmModel{rows: rows, input: ti, width: width, height: height}
+}
+
+func newRenameConfirmModel(rows []proposal, width, height int) confirmModel {
+	m := newConfirmModel(rows, width, height)
+	m.inPlace = true
+	return m
 }
 
 func (m confirmModel) update(msg tea.Msg) (confirmModel, tea.Cmd) {
@@ -72,6 +90,15 @@ func (m confirmModel) update(msg tea.Msg) (confirmModel, tea.Cmd) {
 		m.input.Focus()
 		m.editing = true
 	case "enter", "a":
+		if m.inPlace {
+			var ops []renameOp
+			for _, r := range m.rows {
+				if r.ticked && r.proposed != path.Base(r.file.RelPath) {
+					ops = append(ops, renameOp{id: r.file.ID, relPath: r.file.RelPath, newName: r.proposed})
+				}
+			}
+			return m, func() tea.Msg { return confirmRenameMsg{ops: ops} }
+		}
 		items := make([]download.Item, 0, len(m.rows))
 		for _, r := range m.rows {
 			path := r.file.RelPath
@@ -89,7 +116,11 @@ func (m confirmModel) update(msg tea.Msg) (confirmModel, tea.Cmd) {
 
 func (m confirmModel) view() string {
 	var b strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Render("confirm renames")
+	heading, hint := "confirm renames", " unticked rows keep their original name"
+	if m.inPlace {
+		heading, hint = "confirm renames on put.io", " renames apply on put.io · unticked rows are left alone"
+	}
+	title := lipgloss.NewStyle().Bold(true).Render(heading)
 	b.WriteString(titleBarStyle.Width(m.width).Render(title))
 	b.WriteString("\n")
 
@@ -117,7 +148,7 @@ func (m confirmModel) view() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(statusBarStyle.Width(m.width).Render(" unticked rows keep their original name"))
+	b.WriteString(statusBarStyle.Width(m.width).Render(hint))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("space toggle · e edit · enter approve all · esc cancel"))
 	return b.String()

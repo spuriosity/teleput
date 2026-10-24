@@ -15,6 +15,26 @@ type remoteFile struct {
 	ID      int64
 	RelPath string
 	Size    int64
+	IsDir   bool
+}
+
+// collectTree lists a file or folder plus everything beneath it, folders
+// included, parents before their children.
+func collectTree(ctx context.Context, l lister, root putio.File) ([]remoteFile, error) {
+	out := []remoteFile{{ID: root.ID, RelPath: root.Name, Size: root.Size, IsDir: root.IsDir()}}
+	for i := 0; i < len(out); i++ {
+		if !out[i].IsDir {
+			continue
+		}
+		children, _, err := l.List(ctx, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range children {
+			out = append(out, remoteFile{ID: c.ID, RelPath: filepath.Join(out[i].RelPath, c.Name), Size: c.Size, IsDir: c.IsDir()})
+		}
+	}
+	return out, nil
 }
 
 // collectFiles flattens a file or folder into downloadable entries with

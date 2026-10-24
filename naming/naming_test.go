@@ -117,3 +117,42 @@ func TestShouldBuildMediaServerPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldBuildInPlaceNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    Parsed
+		isDir bool
+		want  string
+	}{
+		{"tv episode file", Parsed{Original: "Show S01/show.s01e05.1080p.mkv", Type: "tv", Title: "Interview with the Vampire", Season: 1, Episode: 5, EpisodeTitle: "A Vile Hunger for Your Hammering Heart"}, false,
+			"Interview with the Vampire - S01E05 - A Vile Hunger for Your Hammering Heart.mkv"},
+		{"tv season folder ignores fake extension", Parsed{Original: "Interview with the Vampire (2022) Season 1 S01 (1080p AMZN WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)", Type: "tv", Title: "Interview with the Vampire", Year: 2022, Season: 1}, true,
+			"Interview with the Vampire - Season 01"},
+		{"tv show folder", Parsed{Original: "IWTV.Complete", Type: "tv", Title: "Interview with the Vampire", Year: 2022}, true,
+			"Interview with the Vampire (2022)"},
+		{"movie file", Parsed{Original: "Dust Bunny 2025 1080p WEB-DL HEVC x265 5.1 BONE.mkv", Type: "movie", Title: "Dust Bunny", Year: 2025}, false,
+			"Dust Bunny (2025).mkv"},
+		{"movie folder", Parsed{Original: "Dust.Bunny.2025.1080p", Type: "movie", Title: "Dust Bunny", Year: 2025}, true,
+			"Dust Bunny (2025)"},
+		{"book keeps author in place", Parsed{Original: "This Inevitable Ruin_ Dungeon C - Matt Dinniman.epub", Type: "book", Title: "This Inevitable Ruin", Author: "Matt Dinniman", Series: "Dungeon Crawler Carl", SeriesIndex: 7}, false,
+			"Matt Dinniman - Dungeon Crawler Carl 07 - This Inevitable Ruin.epub"},
+		{"audiobook folder", Parsed{Original: "Matt Dinniman - Dungeon Crawler Carl 01 (Jeff Hays)", Type: "audiobook", Title: "Dungeon Crawler Carl", Author: "Matt Dinniman"}, true,
+			"Matt Dinniman - Dungeon Crawler Carl"},
+		{"audiobook track", Parsed{Original: "DCC/01 track.mp3", Type: "audiobook", Title: "Dungeon Crawler Carl", Part: 1, PartTitle: "Chapter 1"}, false,
+			"01 - Chapter 1.mp3"},
+		{"title with slash is sanitised", Parsed{Original: "a.mkv", Type: "movie", Title: "Face/Off", Year: 1997}, false,
+			"Face-Off (1997).mkv"},
+		{"other is left alone", Parsed{Original: "sample.mkv", Type: "other"}, false, ""},
+		{"extra is left alone", Parsed{Original: "featurette.mkv", Type: "extra", Title: "Movie"}, false, ""},
+		{"episode missing season is left alone", Parsed{Original: "x.mkv", Type: "tv", Title: "X", Episode: 2}, false, ""},
+		{"untitled folder is left alone", Parsed{Original: "stuff", Type: "movie"}, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := InPlaceName(tt.in, tt.isDir); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

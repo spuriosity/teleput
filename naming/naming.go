@@ -147,3 +147,73 @@ var unsafeChars = strings.NewReplacer(
 func sanitize(s string) string {
 	return strings.Trim(unsafeChars.Replace(s), " .")
 }
+
+// InPlaceName gives a clean name for renaming one put.io item where it
+// stands: a single path element, not a library path. It returns "" when the
+// classification isn't confident enough to rename.
+func InPlaceName(p Parsed, isDir bool) string {
+	if isDir {
+		return dirName(p)
+	}
+	switch p.Type {
+	case "extra", "other", "":
+		return ""
+	case "book":
+		if p.Title == "" {
+			return ""
+		}
+		return withAuthor(p.Author, seriesTitle(p)) + path.Ext(p.Original)
+	case "audiobook":
+		if p.Title == "" {
+			return ""
+		}
+		if p.Part <= 0 {
+			return withAuthor(p.Author, p.Title) + path.Ext(p.Original)
+		}
+	}
+	built := BuildPath(p)
+	if strings.HasPrefix(built, "Other"+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.Base(built)
+}
+
+// dirName names a folder. Folder names have no extension, so path.Ext on
+// release names like "… 5.1 Silence)" must not be used here.
+func dirName(p Parsed) string {
+	if p.Title == "" {
+		return ""
+	}
+	title := sanitize(p.Title)
+	switch p.Type {
+	case "movie", "game":
+		if p.Year > 0 {
+			return fmt.Sprintf("%s (%d)", title, p.Year)
+		}
+		return title
+	case "tv":
+		if p.Season > 0 && p.Episode <= 0 {
+			return fmt.Sprintf("%s - Season %02d", title, p.Season)
+		}
+		if p.Season <= 0 && p.Episode <= 0 {
+			if p.Year > 0 {
+				return fmt.Sprintf("%s (%d)", title, p.Year)
+			}
+			return title
+		}
+	case "book":
+		return withAuthor(p.Author, seriesTitle(p))
+	case "audiobook":
+		return withAuthor(p.Author, p.Title)
+	case "rpg", "music":
+		return title
+	}
+	return ""
+}
+
+func withAuthor(author, title string) string {
+	if author == "" {
+		return sanitize(title)
+	}
+	return sanitize(author) + " - " + sanitize(title)
+}

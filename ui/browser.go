@@ -201,7 +201,7 @@ func (m browserModel) view() string {
 	b.WriteString("\n")
 	b.WriteString(statusBarStyle.Width(m.width).Render(status))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move · enter open · h back · space mark · d download · D delete · x cancel · s settings · q quit"))
+	b.WriteString(helpStyle.Render("j/k move · enter open · h back · space mark · d download · R rename · D delete · x cancel · s settings · q quit"))
 
 	return b.String()
 }

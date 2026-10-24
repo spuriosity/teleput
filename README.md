@@ -37,6 +37,7 @@ saves the token to `~/.config/teleput/config.json`.
 | `space` | Mark/unmark for multi-download (marks survive navigation) |
 | `d` | Download marked items, or the item under the cursor (opens rename confirmation) |
 | `x` | Cancel download under cursor |
+| `R` | Rename marked items (and everything inside them) on put.io with Gemini names (opens rename confirmation) |
 | `D` | Delete from put.io (asks y/N) |
 | `s` | Settings (tokens, download dir) |
 | `q` | Quit |
@@ -44,8 +45,13 @@ saves the token to `~/.config/teleput/config.json`.
 In the rename confirmation: `space` keeps a file's original name, `e` edits
 the proposed path, `enter` approves the batch, `esc` cancels.
 
+`R` renames items where they stand on put.io (nothing moves), e.g. a season
+folder becomes `Show - Season 01` and an episode `Show - S01E05 - Title.mkv`.
+Items Gemini can't classify confidently aren't listed; nothing changes on
+put.io until you approve.
+
 If Gemini is overloaded, naming retries up to three times; if it still fails
-you're asked to retry (`r`), use original names (`o`) or
+you're asked to retry (`r`), use original names (`o`, downloads only) or
 cancel (`esc`).
 
 Downloads never replace existing local files: folders merge, and a file whose

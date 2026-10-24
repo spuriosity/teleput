@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -27,6 +29,10 @@ type deleter interface {
 	Delete(ctx context.Context, ids ...int64) error
 }
 
+type renamer interface {
+	Rename(ctx context.Context, id int64, newname string) error
+}
+
 type Model struct {
 	client   *putio.Client
 	cfg      *config.Config
@@ -34,6 +40,7 @@ type Model struct {
 	namer    *naming.Client
 	lister   lister
 	deleter  deleter
+	renamer  renamer
 	saveCfg  func(*config.Config) error
 	width    int
 	height   int
@@ -67,6 +74,7 @@ func NewModel(client *putio.Client, cfg *config.Config, dl *download.Manager, na
 	if client != nil {
 		m.lister = client.Files
 		m.deleter = client.Files
+		m.renamer = client.Files
 	}
 	return m
 }
@@ -86,11 +94,20 @@ func listenDownloads(ch <-chan download.Event) tea.Cmd {
 }
 
 // renamePlanMsg is the async result of walk + Gemini normalisation. files is
-// kept so naming can be retried without walking put.io again.
+// kept so naming can be retried without walking put.io again. inPlace plans
+// rename put.io items where they stand instead of choosing download paths.
 type renamePlanMsg struct {
 	files     []remoteFile
 	rows      []proposal
 	geminiErr error
+	inPlace   bool
+}
+
+type renameDoneMsg struct {
+	parentID int64
+	renamed  int
+	skipped  int
+	failed   []error
 }
 
 var errNoGeminiToken = errors.New("no gemini token configured (press s)")
@@ -125,9 +142,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.enqueue(msg.items)
 		return m, nil
 
+	case confirmRenameMsg:
+		m.screen = screenBrowse
+		if len(msg.ops) == 0 {
+			m.note = "nothing to rename"
+			return m, nil
+		}
+		m.note = fmt.Sprintf("renaming %d item(s) on put.io…", len(msg.ops))
+		return m, applyRenames(m.renamer, msg.ops, m.browser.parentID)
+
+	case renameDoneMsg:
+		m.note = fmt.Sprintf("renamed %d item(s) on put.io", msg.renamed)
+		if msg.skipped > 0 {
+			m.note += fmt.Sprintf(" · skipped %d clashing name(s)", msg.skipped)
+		}
+		if len(msg.failed) > 0 {
+			m.note += fmt.Sprintf(" · %d failed (%v)", len(msg.failed), msg.failed[0])
+		}
+		m.browser.loading = true
+		return m, m.browser.loadDir(msg.parentID)
+
 	case confirmCancelMsg:
 		m.screen = screenBrowse
-		m.note = "download cancelled"
+		if m.confirm.inPlace {
+			m.note = "rename cancelled"
+		} else {
+			m.note = "download cancelled"
+		}
 		return m, nil
 
 	case settingsSavedMsg:
@@ -197,6 +238,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "d":
 			return m.startDownload()
+		case "R":
+			return m.startRename()
 		case "D":
 			if f, ok := m.browser.selected(); ok {
 				m.deleteFor = &f
@@ -246,16 +289,116 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) startDownload() (tea.Model, tea.Cmd) {
+// takeSelection returns the marked items, or the item under the cursor, and
+// clears the marks.
+func (m *Model) takeSelection() []putio.File {
 	roots := m.browser.markedRoots()
 	if len(roots) == 0 {
 		f, ok := m.browser.selected()
 		if !ok {
-			return m, nil
+			return nil
 		}
 		roots = []putio.File{f}
 	}
 	m.browser.marked = make(map[int64]putio.File)
+	return roots
+}
+
+func (m Model) startRename() (tea.Model, tea.Cmd) {
+	if m.namer == nil {
+		m.note = "renaming needs a gemini token (press s)"
+		return m, nil
+	}
+	roots := m.takeSelection()
+	if len(roots) == 0 {
+		return m, nil
+	}
+	l, namer := m.lister, m.namer
+	m.note = "planning rename…"
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var items []remoteFile
+		seen := make(map[int64]bool)
+		for _, root := range roots {
+			collected, err := collectTree(ctx, l, root)
+			if err != nil {
+				return errMsg{err}
+			}
+			for _, it := range collected {
+				if !seen[it.ID] {
+					seen[it.ID] = true
+					items = append(items, it)
+				}
+			}
+		}
+		return planInPlace(namer, items)()
+	}
+}
+
+// planInPlace asks Gemini for a clean name per item; rows only include items
+// that would actually change.
+func planInPlace(namer *naming.Client, items []remoteFile) tea.Cmd {
+	return func() tea.Msg {
+		if namer == nil {
+			return renamePlanMsg{files: items, inPlace: true, geminiErr: errNoGeminiToken}
+		}
+		names := make([]string, len(items))
+		for i, it := range items {
+			names[i] = it.RelPath
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), namer.MaxDuration())
+		defer cancel()
+		parsed, err := namer.Normalise(ctx, names)
+		if err != nil {
+			return renamePlanMsg{files: items, inPlace: true, geminiErr: err}
+		}
+		var rows []proposal
+		for i, it := range items {
+			name := naming.InPlaceName(parsed[i], it.IsDir)
+			if name != "" && name != path.Base(it.RelPath) {
+				rows = append(rows, proposal{file: it, proposed: name, ticked: true})
+			}
+		}
+		return renamePlanMsg{files: items, rows: rows, inPlace: true}
+	}
+}
+
+// applyRenames renames items one at a time, skipping any that would clash
+// with another rename in the same folder.
+func applyRenames(r renamer, ops []renameOp, parentID int64) tea.Cmd {
+	return func() tea.Msg {
+		done := renameDoneMsg{parentID: parentID}
+		taken := make(map[string]bool)
+		for _, op := range ops {
+			if strings.Contains(op.newName, "/") || strings.TrimSpace(op.newName) == "" {
+				done.failed = append(done.failed, fmt.Errorf("%s: invalid name %q", path.Base(op.relPath), op.newName))
+				continue
+			}
+			key := path.Join(path.Dir(op.relPath), op.newName)
+			if taken[key] {
+				done.skipped++
+				continue
+			}
+			taken[key] = true
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			err := r.Rename(ctx, op.id, op.newName)
+			cancel()
+			if err != nil {
+				done.failed = append(done.failed, fmt.Errorf("%s: %w", path.Base(op.relPath), err))
+				continue
+			}
+			done.renamed++
+		}
+		return done
+	}
+}
+
+func (m Model) startDownload() (tea.Model, tea.Cmd) {
+	roots := m.takeSelection()
+	if len(roots) == 0 {
+		return m, nil
+	}
 	l, namer := m.lister, m.namer
 	m.note = "planning download…"
 	return m, func() tea.Msg {
@@ -318,6 +461,9 @@ func rawProposals(files []remoteFile) []proposal {
 }
 
 func (m Model) handleRenamePlan(msg renamePlanMsg) (tea.Model, tea.Cmd) {
+	if msg.inPlace {
+		return m.handleInPlacePlan(msg)
+	}
 	if len(msg.rows) == 0 {
 		m.note = "nothing to download"
 		return m, nil
@@ -339,21 +485,48 @@ func (m Model) handleRenamePlan(msg renamePlanMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleInPlacePlan(msg renamePlanMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case errors.Is(msg.geminiErr, errNoGeminiToken):
+		m.note = "renaming needs a gemini token (press s)"
+	case msg.geminiErr != nil:
+		m.namingFailed = &msg
+		m.note = ""
+	case len(msg.rows) == 0:
+		m.note = fmt.Sprintf("nothing to rename (%d item(s) already clean or unrecognised)", len(msg.files))
+	default:
+		m.confirm = newRenameConfirmModel(msg.rows, m.width, m.height)
+		m.screen = screenConfirm
+		m.note = ""
+	}
+	return m, nil
+}
+
 func (m Model) handleNamingFailedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	plan := *m.namingFailed
 	switch msg.String() {
 	case "r":
 		m.namingFailed = nil
 		m.note = "retrying gemini naming…"
+		if plan.inPlace {
+			return m, planInPlace(m.namer, plan.files)
+		}
 		return m, planNames(m.namer, plan.files)
 	case "o":
+		if plan.inPlace {
+			return m, nil
+		}
 		m.namingFailed = nil
 		m.enqueueRaw(plan.rows)
 		m.note = fmt.Sprintf("queued %d item(s) with original names", len(plan.rows))
 		return m, nil
 	case "esc", "n":
 		m.namingFailed = nil
-		m.note = "download cancelled"
+		if plan.inPlace {
+			m.note = "rename cancelled"
+		} else {
+			m.note = "download cancelled"
+		}
 		return m, nil
 	}
 	return m, nil
@@ -419,6 +592,9 @@ func (m Model) statusExtra() string {
 	}
 	if f := m.namingFailed; f != nil {
 		// choices first so a long error can't push them off a narrow screen
+		if f.inPlace {
+			return fmt.Sprintf("Naming %d item(s) for rename failed · r retry · esc cancel · %v", len(f.files), f.geminiErr)
+		}
 		return fmt.Sprintf("Naming %d item(s) failed · r retry · o original names · esc cancel · %v", len(f.files), f.geminiErr)
 	}
 	var parts []string

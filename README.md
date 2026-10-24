@@ -44,6 +44,10 @@ saves the token to `~/.config/teleput/config.json`.
 In the rename confirmation: `space` keeps a file's original name, `e` edits
 the proposed path, `enter` approves the batch, `esc` cancels.
 
+If Gemini is overloaded, naming retries up to three times; if it still fails
+you're asked to retry (`r`), use original names (`o`) or
+cancel (`esc`).
+
 Downloads never replace existing local files: folders merge, and a file whose
 destination already exists is saved alongside it as `name (1).ext`.
 

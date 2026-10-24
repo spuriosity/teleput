@@ -65,7 +65,82 @@ func geminiServer(t *testing.T, inner string, status int) *httptest.Server {
 func testClient(url string) *Client {
 	c := NewClient("test-token")
 	c.BaseURL = url
+	c.Backoff = []time.Duration{0, 0}
 	return c
+}
+
+// flakyServer answers with the given statuses in turn, then succeeds.
+func flakyServer(t *testing.T, inner string, statuses ...int) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= len(statuses) {
+			w.WriteHeader(statuses[calls-1])
+			w.Write([]byte(`{"error":{"message":"This model is currently experiencing high demand."}}`))
+			return
+		}
+		envelope := map[string]any{"candidates": []map[string]any{{"content": map[string]any{"parts": []map[string]string{{"text": inner}}}}}}
+		json.NewEncoder(w).Encode(envelope)
+	})), &calls
+}
+
+func TestShouldRetryOverloadedThenSucceed(t *testing.T) {
+	srv, calls := flakyServer(t, `[{"original":"a.mkv","type":"movie","title":"A","year":2001}]`, http.StatusServiceUnavailable, http.StatusServiceUnavailable)
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).Normalise(context.Background(), []string{"a.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 3 || got[0].Title != "A" {
+		t.Fatalf("expected success on third attempt, got calls=%d parsed=%+v", *calls, got)
+	}
+}
+
+func TestShouldGiveUpAfterAllAttempts(t *testing.T) {
+	srv, calls := flakyServer(t, `[]`, 503, 503, 503, 503)
+	defer srv.Close()
+
+	_, err := testClient(srv.URL).Normalise(context.Background(), []string{"a.mkv"})
+	if err == nil || *calls != 3 {
+		t.Fatalf("expected failure after 3 attempts, got err=%v calls=%d", err, *calls)
+	}
+	if !strings.Contains(err.Error(), "high demand") || !strings.Contains(err.Error(), "3 attempts") {
+		t.Fatalf("expected readable message with attempt count, got %q", err)
+	}
+}
+
+func TestShouldNotRetryClientErrors(t *testing.T) {
+	srv, calls := flakyServer(t, `[]`, http.StatusBadRequest)
+	defer srv.Close()
+
+	if _, err := testClient(srv.URL).Normalise(context.Background(), []string{"a.mkv"}); err == nil || *calls != 1 {
+		t.Fatalf("expected a single failed attempt on 400, got err=%v calls=%d", err, *calls)
+	}
+}
+
+func TestShouldRetryStalledAttempt(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		envelope := map[string]any{"candidates": []map[string]any{{"content": map[string]any{"parts": []map[string]string{{"text": `[]`}}}}}}
+		json.NewEncoder(w).Encode(envelope)
+	}))
+	defer srv.Close()
+
+	c := testClient(srv.URL)
+	c.AttemptTimeout = 100 * time.Millisecond
+	if _, err := c.Normalise(context.Background(), []string{"a.mkv"}); err != nil || calls != 2 {
+		t.Fatalf("expected stalled first attempt to be retried, got err=%v calls=%d", err, calls)
+	}
 }
 
 func TestShouldParseBatchMatchedByOriginal(t *testing.T) {

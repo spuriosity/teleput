@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,6 +49,9 @@ type Model struct {
 	queued    int
 	note      string
 	deleteFor *putio.File
+	// namingFailed holds a plan whose Gemini naming failed, awaiting
+	// retry / original names / cancel.
+	namingFailed *renamePlanMsg
 }
 
 func NewModel(client *putio.Client, cfg *config.Config, dl *download.Manager, namer *naming.Client) Model {
@@ -81,11 +85,15 @@ func listenDownloads(ch <-chan download.Event) tea.Cmd {
 	return func() tea.Msg { return downloadEventMsg{ev: <-ch} }
 }
 
-// renamePlanMsg is the async result of walk + Gemini normalisation.
+// renamePlanMsg is the async result of walk + Gemini normalisation. files is
+// kept so naming can be retried without walking put.io again.
 type renamePlanMsg struct {
+	files     []remoteFile
 	rows      []proposal
 	geminiErr error
 }
+
+var errNoGeminiToken = errors.New("no gemini token configured (press s)")
 
 type deleteDoneMsg struct {
 	parentID int64
@@ -174,7 +182,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	editing := (m.screen == screenConfirm && m.confirm.editing) ||
 		(m.screen == screenSettings && m.settings.editing)
-	if !editing && key.Matches(msg, keys.Quit) && m.screen == screenBrowse && m.deleteFor == nil {
+	if !editing && key.Matches(msg, keys.Quit) && m.screen == screenBrowse && m.deleteFor == nil && m.namingFailed == nil {
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -182,6 +190,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.screen == screenBrowse {
 		if m.deleteFor != nil {
 			return m.handleDeleteConfirmKey(msg)
+		}
+		if m.namingFailed != nil {
+			return m.handleNamingFailedKey(msg)
 		}
 		switch msg.String() {
 		case "d":
@@ -267,18 +278,26 @@ func (m Model) startDownload() (tea.Model, tea.Cmd) {
 		}
 		cancelCollect()
 
+		return planNames(namer, files)()
+	}
+}
+
+// planNames asks Gemini for destination paths; on failure the plan carries
+// raw proposals and the error.
+func planNames(namer *naming.Client, files []remoteFile) tea.Cmd {
+	return func() tea.Msg {
 		if namer == nil {
-			return renamePlanMsg{rows: rawProposals(files), geminiErr: fmt.Errorf("no gemini token configured (press s)")}
+			return renamePlanMsg{files: files, rows: rawProposals(files), geminiErr: errNoGeminiToken}
 		}
 		names := make([]string, len(files))
 		for i, rf := range files {
 			names[i] = rf.RelPath
 		}
-		namingCtx, cancelNaming := context.WithTimeout(context.Background(), 60*time.Second)
+		namingCtx, cancelNaming := context.WithTimeout(context.Background(), namer.MaxDuration())
 		defer cancelNaming()
 		parsed, err := namer.Normalise(namingCtx, names)
 		if err != nil {
-			return renamePlanMsg{rows: rawProposals(files), geminiErr: err}
+			return renamePlanMsg{files: files, rows: rawProposals(files), geminiErr: err}
 		}
 
 		rows := make([]proposal, len(files))
@@ -286,7 +305,7 @@ func (m Model) startDownload() (tea.Model, tea.Cmd) {
 			proposed := naming.BuildPath(parsed[i])
 			rows[i] = proposal{file: rf, proposed: proposed, ticked: proposed != "Other/"+rf.RelPath}
 		}
-		return renamePlanMsg{rows: rows}
+		return renamePlanMsg{files: files, rows: rows}
 	}
 }
 
@@ -303,20 +322,49 @@ func (m Model) handleRenamePlan(msg renamePlanMsg) (tea.Model, tea.Cmd) {
 		m.note = "nothing to download"
 		return m, nil
 	}
+	if errors.Is(msg.geminiErr, errNoGeminiToken) {
+		// naming not configured — keep original names without asking
+		m.enqueueRaw(msg.rows)
+		m.note = fmt.Sprintf("raw names (%v)", msg.geminiErr)
+		return m, nil
+	}
 	if msg.geminiErr != nil {
-		// nothing normalised — skip the dialog, keep original names
-		items := make([]download.Item, len(msg.rows))
-		for i, r := range msg.rows {
-			items[i] = download.Item{FileID: r.file.ID, RelPath: r.file.RelPath, Size: r.file.Size}
-		}
-		m.enqueue(items)
-		m.note = fmt.Sprintf("raw names (gemini: %v)", msg.geminiErr)
+		m.namingFailed = &msg
+		m.note = ""
 		return m, nil
 	}
 	m.confirm = newConfirmModel(msg.rows, m.width, m.height)
 	m.screen = screenConfirm
 	m.note = ""
 	return m, nil
+}
+
+func (m Model) handleNamingFailedKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	plan := *m.namingFailed
+	switch msg.String() {
+	case "r":
+		m.namingFailed = nil
+		m.note = "retrying gemini naming…"
+		return m, planNames(m.namer, plan.files)
+	case "o":
+		m.namingFailed = nil
+		m.enqueueRaw(plan.rows)
+		m.note = fmt.Sprintf("queued %d item(s) with original names", len(plan.rows))
+		return m, nil
+	case "esc", "n":
+		m.namingFailed = nil
+		m.note = "download cancelled"
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) enqueueRaw(rows []proposal) {
+	items := make([]download.Item, len(rows))
+	for i, r := range rows {
+		items[i] = download.Item{FileID: r.file.ID, RelPath: r.file.RelPath, Size: r.file.Size}
+	}
+	m.enqueue(items)
 }
 
 func (m *Model) enqueue(items []download.Item) {
@@ -368,6 +416,10 @@ func (m Model) applyDownloadEvent(ev download.Event) Model {
 func (m Model) statusExtra() string {
 	if m.deleteFor != nil {
 		return fmt.Sprintf("Delete %q from put.io? (y/N)", m.deleteFor.Name)
+	}
+	if f := m.namingFailed; f != nil {
+		// choices first so a long error can't push them off a narrow screen
+		return fmt.Sprintf("Naming %d item(s) failed · r retry · o original names · esc cancel · %v", len(f.files), f.geminiErr)
 	}
 	var parts []string
 	if m.activeDl != nil {

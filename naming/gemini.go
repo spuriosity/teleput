@@ -4,25 +4,82 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 )
 
 const (
-	defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
-	defaultModel   = "gemini-flash-latest"
+	defaultBaseURL        = "https://generativelanguage.googleapis.com/v1beta"
+	defaultModel          = "gemini-flash-latest"
+	defaultAttemptTimeout = 30 * time.Second
 )
+
+// defaultBackoff gives three attempts; Gemini 503s ("high demand") and
+// stalled requests are usually transient.
+var defaultBackoff = []time.Duration{2 * time.Second, 5 * time.Second}
 
 type Client struct {
 	Token   string
 	BaseURL string
 	Model   string
 	HTTP    *http.Client
+	// AttemptTimeout caps each request; Backoff holds the waits between
+	// attempts, so len(Backoff)+1 attempts are made in total.
+	AttemptTimeout time.Duration
+	Backoff        []time.Duration
 }
 
 func NewClient(token string) *Client {
-	return &Client{Token: token, BaseURL: defaultBaseURL, Model: defaultModel, HTTP: http.DefaultClient}
+	return &Client{
+		Token: token, BaseURL: defaultBaseURL, Model: defaultModel, HTTP: http.DefaultClient,
+		AttemptTimeout: defaultAttemptTimeout, Backoff: defaultBackoff,
+	}
+}
+
+// MaxDuration is the longest Normalise can take across all attempts.
+func (c *Client) MaxDuration() time.Duration {
+	d := c.AttemptTimeout * time.Duration(len(c.Backoff)+1)
+	for _, b := range c.Backoff {
+		d += b
+	}
+	return d
+}
+
+type statusError struct {
+	code int
+	body []byte
+}
+
+func (e *statusError) Error() string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(e.body, &env) == nil && env.Error.Message != "" {
+		return fmt.Sprintf("gemini status %d: %s", e.code, env.Error.Message)
+	}
+	return fmt.Sprintf("gemini status %d: %.200s", e.code, e.body)
+}
+
+var errAttemptTimeout = errors.New("gemini did not reply in time")
+
+func retryable(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		switch se.code {
+		case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+		return false
+	}
+	var ue *url.Error
+	return errors.Is(err, errAttemptTimeout) || errors.As(err, &ue)
 }
 
 const promptHeader = `Classify this complete dataset of media file names. Analyze all entries together
@@ -94,8 +151,9 @@ type geminiResponse struct {
 	} `json:"candidates"`
 }
 
-// Normalise classifies a batch of release names in one Gemini call. Results
-// are matched by the echoed original name, falling back to input order.
+// Normalise classifies a batch of release names in one Gemini call, retrying
+// overload errors and stalled requests. Results are matched by the echoed
+// original name, falling back to input order.
 func (c *Client) Normalise(ctx context.Context, names []string) ([]Parsed, error) {
 	namesJSON, err := json.Marshal(names)
 	if err != nil {
@@ -109,37 +167,30 @@ func (c *Client) Normalise(ctx context.Context, names []string) ([]Parsed, error
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/models/%s:generateContent", c.BaseURL, c.Model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", c.Token)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini status %d: %.200s", resp.StatusCode, raw)
-	}
-
-	var gr geminiResponse
-	if err := json.Unmarshal(raw, &gr); err != nil {
-		return nil, fmt.Errorf("decoding gemini envelope: %w", err)
-	}
-	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("gemini returned no candidates")
+	var text string
+	for attempt := 0; ; attempt++ {
+		text, err = c.generate(ctx, body)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !retryable(err) {
+			return nil, err
+		}
+		if attempt >= len(c.Backoff) {
+			return nil, fmt.Errorf("%w (gave up after %d attempts)", err, attempt+1)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(c.Backoff[attempt]):
+		}
 	}
 
 	var parsed []Parsed
-	if err := json.Unmarshal([]byte(gr.Candidates[0].Content.Parts[0].Text), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
 		return nil, fmt.Errorf("decoding gemini result: %w", err)
 	}
 
@@ -160,4 +211,49 @@ func (c *Client) Normalise(ctx context.Context, names []string) ([]Parsed, error
 		}
 	}
 	return out, nil
+}
+
+// generate makes one generateContent call and returns the candidate text.
+func (c *Client) generate(ctx context.Context, body []byte) (string, error) {
+	if c.AttemptTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, c.AttemptTimeout, errAttemptTimeout)
+		defer cancel()
+	}
+
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent", c.BaseURL, c.Model)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", c.Token)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		if errors.Is(context.Cause(ctx), errAttemptTimeout) {
+			return "", fmt.Errorf("%w within %s", errAttemptTimeout, c.AttemptTimeout)
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		if errors.Is(context.Cause(ctx), errAttemptTimeout) {
+			return "", fmt.Errorf("%w within %s", errAttemptTimeout, c.AttemptTimeout)
+		}
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", &statusError{code: resp.StatusCode, body: raw}
+	}
+
+	var gr geminiResponse
+	if err := json.Unmarshal(raw, &gr); err != nil {
+		return "", fmt.Errorf("decoding gemini envelope: %w", err)
+	}
+	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("gemini returned no candidates")
+	}
+	return gr.Candidates[0].Content.Parts[0].Text, nil
 }

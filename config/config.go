@@ -9,6 +9,7 @@ import (
 const appName = "teleput"
 
 type Config struct {
+	ClientID    string `json:"client_id,omitempty"`
 	OAuthToken  string `json:"oauth_token"`
 	GeminiToken string `json:"gemini_token,omitempty"`
 	DownloadDir string `json:"download_dir,omitempty"`
@@ -23,6 +24,15 @@ func (c *Config) EffectiveDownloadDir() string {
 		return "Downloads"
 	}
 	return filepath.Join(home, "Downloads")
+}
+
+// EffectiveClientID is the put.io OAuth app ID used to sign in: the config
+// value, or PUTIO_CLIENT_ID if that's empty.
+func (c *Config) EffectiveClientID() string {
+	if c.ClientID != "" {
+		return c.ClientID
+	}
+	return os.Getenv("PUTIO_CLIENT_ID")
 }
 
 func (c *Config) EffectiveGeminiToken() string {

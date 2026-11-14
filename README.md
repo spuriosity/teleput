@@ -27,6 +27,11 @@ PUTIO_TOKEN=xxx teleput          # or via env var
 On first run with no token, it opens a browser for put.io OAuth approval and
 saves the token to `~/.config/teleput/config.json`.
 
+Signing in needs a put.io OAuth app of your own: create one in put.io under
+Settings → OAuth Apps (the callback URL doesn't matter, teleput uses the
+out-of-band flow), then put its ID in the config as `client_id`, or set
+`PUTIO_CLIENT_ID`. You only need it to sign in; a saved token keeps working.
+
 ## Keys
 
 | Key | Action |
@@ -63,6 +68,7 @@ destination already exists is saved alongside it as `name (1).ext`.
 
 ```json
 {
+  "client_id": "12345",
   "oauth_token": "…",
   "gemini_token": "…",
   "download_dir": "/path/to/media"

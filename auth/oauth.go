@@ -3,18 +3,21 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/pkg/browser"
 )
 
-const (
-	ClientID = "8918"
-	BaseURL  = "https://api.put.io/v2"
-)
+const BaseURL = "https://api.put.io/v2"
+
+// ErrNoClientID means no put.io OAuth app ID is configured.
+var ErrNoClientID = errors.New(`no put.io app ID set: create an OAuth app in put.io (Settings → OAuth Apps), ` +
+	`then set "client_id" in ~/.config/teleput/config.json or PUTIO_CLIENT_ID`)
 
 type oobCodeResponse struct {
 	Code string `json:"code"`
@@ -24,8 +27,13 @@ type oobTokenResponse struct {
 	OAuthToken string `json:"oauth_token"`
 }
 
-func Authenticate(ctx context.Context) (string, error) {
-	code, err := getOOBCode()
+// Authenticate runs put.io's out-of-band sign-in for the OAuth app clientID
+// and returns the approved token.
+func Authenticate(ctx context.Context, clientID string) (string, error) {
+	if clientID == "" {
+		return "", ErrNoClientID
+	}
+	code, err := getOOBCode(clientID)
 	if err != nil {
 		return "", fmt.Errorf("getting OOB code: %w", err)
 	}
@@ -41,8 +49,8 @@ func Authenticate(ctx context.Context) (string, error) {
 	return pollForToken(ctx, code)
 }
 
-func getOOBCode() (string, error) {
-	resp, err := http.Get(BaseURL + "/oauth2/oob/code?app_id=" + ClientID)
+func getOOBCode(clientID string) (string, error) {
+	resp, err := http.Get(BaseURL + "/oauth2/oob/code?app_id=" + url.QueryEscape(clientID))
 	if err != nil {
 		return "", err
 	}

@@ -19,6 +19,18 @@ func TestShouldPreferConfiguredDownloadDir(t *testing.T) {
 	}
 }
 
+func TestShouldFallBackToClientIDEnvVar(t *testing.T) {
+	t.Setenv("PUTIO_CLIENT_ID", "1234")
+	c := &Config{}
+	if got := c.EffectiveClientID(); got != "1234" {
+		t.Fatalf("expected env fallback, got %q", got)
+	}
+	c.ClientID = "5678"
+	if got := c.EffectiveClientID(); got != "5678" {
+		t.Fatalf("expected config to win over env, got %q", got)
+	}
+}
+
 func TestShouldFallBackToGeminiEnvVar(t *testing.T) {
 	t.Setenv("GEMINI_TOKEN", "env-token")
 	c := &Config{}

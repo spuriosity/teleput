@@ -51,7 +51,7 @@ func main() {
 		fmt.Println("(You can also pass --token=<token> or set PUTIO_TOKEN)")
 		fmt.Println()
 
-		token, err = auth.Authenticate(context.Background())
+		token, err = auth.Authenticate(context.Background(), cfg.EffectiveClientID())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
 			os.Exit(1)
@@ -91,14 +91,14 @@ func newPutioClient(token string) *putio.Client {
 }
 
 func runLogin() {
-	token, err := auth.Authenticate(context.Background())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
-		os.Exit(1)
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = &config.Config{}
+	}
+	token, err := auth.Authenticate(context.Background(), cfg.EffectiveClientID())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
+		os.Exit(1)
 	}
 	cfg.OAuthToken = token
 	if err := config.Save(cfg); err != nil {
